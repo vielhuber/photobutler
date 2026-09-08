@@ -1,0 +1,44 @@
+{
+    "name": "vielhuber/photobutler",
+    "description": "Self-hosted photo albums with SQLite and automatic AI tagging.",
+    "license": "MIT",
+    "archive": {
+        "exclude": [
+            "/.data/",
+            "/.env",
+            "/vendor/",
+            "/composer.lock",
+            "/package-lock.json",
+            "/node_modules/",
+            "/.phpunit.cache/",
+            "/tests/"
+        ]
+    },
+    "require": {
+        "php": "^8.5",
+        "ext-pdo_sqlite": "*",
+        "ext-gd": "*",
+        "ext-exif": "*",
+        "ext-mbstring": "*",
+        "ext-curl": "*",
+        "vielhuber/aihelper": "^5.0.0",
+        "vielhuber/simpleauth": "^1.9.6",
+        "vlucas/phpdotenv": "^5.6.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "vielhuber\\photobutler\\": "src/"
+        }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^12.0 || ^13.0"
+    },
+    "bin": [
+        "bin/photobutler-init",
+        "bin/photobutler-index"
+    ],
+    "scripts": {
+        "test": "phpunit",
+        "lint": "find src tests templates public -name '*.php' -print0 | xargs -0 -n1 php -l"
+    }
+}

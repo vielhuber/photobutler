@@ -1,0 +1,44 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+require $_composer_autoload_path ?? __DIR__ . '/../vendor/autoload.php';
+
+$root = getcwd();
+if ($root === false) {
+    fwrite(STDERR, "Arbeitsverzeichnis nicht verfügbar.\n");
+    exit(1);
+}
+$package = dirname(__DIR__);
+foreach (['.data', '.data/thumbnails', 'public'] as $directory) {
+    if (!is_dir($root . '/' . $directory)) {
+        mkdir($root . '/' . $directory, $directory === 'public' ? 0755 : 0700, true);
+    }
+}
+if (!is_file($root . '/.data/.env')) {
+    copy($package . '/.env.example', $root . '/.data/.env');
+    chmod($root . '/.data/.env', 0600);
+}
+if (preg_match('/^[ \t]*(?:export[ \t]+)?AUTH_USERNAME[ \t]*=/m', file_get_contents($root . '/.data/.env')) !== 1) {
+    file_put_contents($root . '/.data/.env', "\nAUTH_USERNAME=admin\n", FILE_APPEND);
+}
+$library = new \vielhuber\photobutler\PhotoButler($root);
+if ($library->getSetting('JWT_SECRET') === '') {
+    $envPath = $root . '/.data/.env';
+    $env = file_get_contents($envPath);
+    $env = preg_replace('/^[ \t]*(?:export[ \t]+)?JWT_SECRET[ \t]*=.*\R?/m', '', $env);
+    file_put_contents($envPath, rtrim($env) . "\nJWT_SECRET=" . bin2hex(random_bytes(32)) . "\n");
+}
+$entry = file_get_contents($package . '/public/index.php');
+$legacyEntry = str_replace(
+    'new \vielhuber\photobutler\PhotoButler(dirname(__DIR__))->run();',
+    'new \vielhuber\photobutler\WebApp(new \vielhuber\photobutler\PhotoButler(dirname(__DIR__)))->run();',
+    $entry
+);
+if (!is_file($root . '/public/index.php') || file_get_contents($root . '/public/index.php') === $legacyEntry) {
+    file_put_contents($root . '/public/index.php', $entry);
+}
+if (!is_file($root . '/public/.htaccess')) {
+    copy($package . '/public/.htaccess', $root . '/public/.htaccess');
+}
+echo "Photobutler eingerichtet.\n1. .data/.env bearbeiten (Fotoquellen, KI und Login-Daten).\n2. vendor/bin/photobutler-index --scan-only\n3. Eigenen Webserver auf public/ konfigurieren\n";

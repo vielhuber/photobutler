@@ -1,0 +1,30 @@
+name: CI
+
+on:
+    push:
+    pull_request:
+    workflow_dispatch:
+
+jobs:
+    build-test:
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                php: ['8.5']
+        steps:
+            - uses: actions/checkout@v6
+            - uses: shivammathur/setup-php@v2
+              with:
+                  php-version: '${{ matrix.php }}'
+                  extensions: pdo_sqlite, gd, exif, mbstring, curl
+                  tools: composer
+            - run: composer install --no-interaction --prefer-dist
+            - run: composer validate --strict
+            - run: composer lint
+            - run: composer test
+            - uses: actions/setup-node@v4
+              with:
+                  node-version-file: .nvmrc
+            - run: npm install --ignore-scripts
+            - run: npm run format:check
+            - run: node --check assets/app.js && node --check assets/login.js
