@@ -55,6 +55,66 @@ final class PhotoButlerTest extends TestCase
         $this->assertFileExists($this->library->imagePath($photos[0]->id));
     }
 
+    public function testStickerArchiveRendersPreviewAndAnimationWithoutChangingOriginal(): void
+    {
+        $source = $this->root . '/photos/Urlaub/sticker.webp';
+        $archive = new ZipArchive();
+        $archive->open($source, ZipArchive::CREATE);
+        $archive->addFromString('animation/animation.json', file_get_contents(__DIR__ . '/fixtures/sticker.json'));
+        $archive->close();
+        $hash = hash_file('sha256', $source);
+        $this->library->index();
+        $id = $this->library->photos(query: 'sticker')[0]->id;
+        $preview = $this->library->imagePath($id);
+        $this->assertNotNull($preview);
+        $this->assertSame('image/jpeg', getimagesize($preview)['mime']);
+        $this->assertSame(64, $this->library->photo($id)->width);
+        $animation = $this->library->imagePath($id, animated: true);
+        $this->assertSame('image/webp', getimagesize($animation)['mime']);
+        $this->assertStringContainsString('ANIM', file_get_contents($animation));
+        $this->assertSame($source, $this->library->imagePath($id, original: true));
+        $this->assertSame($hash, hash_file('sha256', $source));
+        $this->assertSame($animation, $this->library->imagePath($id, animated: true));
+        unlink($preview);
+        $this->assertFileExists($this->library->imagePath($id));
+        imagejpeg(imagecreatetruecolor(64, 64), $source);
+        clearstatcache();
+        $this->library->index();
+        $this->assertFileDoesNotExist($animation);
+        $this->assertSame($this->library->imagePath($id), $this->library->imagePath($id, animated: true));
+    }
+
+    public function testAnimatedWebpGetsAnAiPreviewAndKeepsPlaying(): void
+    {
+        $source = $this->root . '/photos/Urlaub/animated.webp';
+        copy(__DIR__ . '/fixtures/animated-sticker.webp', $source);
+        $hash = hash_file('sha256', $source);
+        $this->library->index();
+        $id = $this->library->photos(query: 'animated')[0]->id;
+        $preview = $this->library->imagePath($id);
+        $this->assertNotNull($preview);
+        $this->assertSame('image/jpeg', getimagesize($preview)['mime']);
+        $this->assertSame(32, $this->library->photo($id)->width);
+        $this->assertStringContainsString('ANIM', file_get_contents($this->library->imagePath($id, animated: true)));
+        $this->assertSame($source, $this->library->imagePath($id, original: true));
+        $this->assertSame($hash, hash_file('sha256', $source));
+    }
+
+    public function testOtherZipEntriesAreNeverExtracted(): void
+    {
+        $source = $this->root . '/photos/Urlaub/sticker.webp';
+        $archive = new ZipArchive();
+        $archive->open($source, ZipArchive::CREATE);
+        $archive->addFromString('../escaped.json', '{}');
+        $archive->addFromString('animation/animation.json', str_repeat(' ', 4194305));
+        $archive->close();
+        $this->library->index();
+        $id = $this->library->photos(query: 'sticker')[0]->id;
+        $this->assertNull($this->library->imagePath($id));
+        $this->assertFileDoesNotExist($this->root . '/escaped.json');
+        $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
+    }
+
     public function testSearchTagsAndFavorites(): void
     {
         $this->library->index();
@@ -65,6 +125,88 @@ final class PhotoButlerTest extends TestCase
         $this->assertCount(1, $this->library->photos(tag: 'Meer'));
         $this->assertCount(0, $this->library->photos(query: '%'));
         $this->assertSame(['Küste', 'Meer'], $this->library->photo($id)->tags);
+    }
+
+    public function testGalleryKeepsWorkerInSidebarAndOffersInfiniteLoading(): void
+    {
+        $this->library->index();
+        $photos = array_fill(0, 60, $this->library->photos()[0]);
+        $stats = ['total' => 61, 'tagged' => 0, 'errors' => 0, 'favorites' => 0, 'queued' => 61];
+        $csrf = 'test-csrf';
+        $title = 'Fotos';
+        $favorites = false;
+        $album = $query = $tag = '';
+        $page = 1;
+        $albums = [['album' => 'Urlaub', 'cover' => $photos[0]->id, 'total' => 61]];
+        $tags = [];
+        $pagination = ['q' => 'Meer & Strand', 'album' => 'Urlaub', 'tag' => 'Meer', 'favorites' => '1'];
+        $escape = fn(string $value): string => htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+        ob_start();
+        require dirname(__DIR__) . '/templates/gallery.php';
+        $html = ob_get_clean();
+        $this->assertStringContainsString(' · photobutler</title>', $html);
+        $this->assertStringNotContainsString('Photobutler', $html);
+        $this->assertStringContainsString('type="module" src="?asset=navigation.js"', $html);
+        $this->assertLessThan(strpos($html, '?asset=app.css'), strpos($html, '?asset=preferences.js'));
+        $document = \Dom\HTMLDocument::createFromString($html, LIBXML_NOERROR);
+        $this->assertSame(3, $document->querySelectorAll('#gallery-columns option')->length);
+        $this->assertNotNull($document->querySelector('.sidebar #tag-count'));
+        $this->assertNotNull($document->querySelector('.sidebar #worker-message'));
+        $this->assertNotNull($document->querySelector('.sidebar #worker-progress'));
+        $this->assertSame('61', $document->querySelector('#tag-pending')->getAttribute('data-queued'));
+        $this->assertNull($document->querySelector('.pagination'));
+        foreach (['.photo-card img', '.album-card img'] as $selector) {
+            $this->assertSame(
+                '?photo=' . $photos[0]->id . '&size=display',
+                $document->querySelector($selector)->getAttribute('src')
+            );
+        }
+        parse_str(
+            parse_url($document->querySelector('#photo-loader')->getAttribute('data-next'), PHP_URL_QUERY),
+            $next
+        );
+        $this->assertSame($pagination + ['page' => '2'], $next);
+    }
+
+    public function testPhotoBatchesRetainFiltersAndDoNotOverlap(): void
+    {
+        $this->library->index();
+        for ($number = 0; $number < 64; $number++) {
+            $statement = $this->library->database->prepare("INSERT INTO photos
+                (root, path, album, name, modified, bytes, width, height, taken, seen, ai_tags, favorite)
+                VALUES ('/photos', ?, 'Urlaub', 'Meer.jpg', 1, 1, 0, 0, '2026-01-01', 'test', '[\"Meer\"]', 1)");
+            $statement->execute(['/photos/' . $number . '.jpg']);
+        }
+        $first = $this->library->photos(query: 'Meer', album: 'Urlaub', tag: 'Meer', favorites: true);
+        $second = $this->library->photos(query: 'Meer', album: 'Urlaub', tag: 'Meer', favorites: true, page: 2);
+        $this->assertCount(60, $first);
+        $this->assertCount(4, $second);
+        $this->assertSame([], array_intersect(array_column($first, 'id'), array_column($second, 'id')));
+        $this->assertSame([], $this->library->photos(tag: 'Meer', favorites: true, page: 3));
+    }
+
+    public function testViewerLoadsOriginalInsteadOfGalleryPreview(): void
+    {
+        $script = file_get_contents(dirname(__DIR__) . '/assets/app.js');
+        $this->assertStringContainsString('$image.src = `?photo=${id}&size=original`;', $script);
+        $this->assertStringNotContainsString(
+            '$image.src = `?photo=${$cards[index].dataset.photo}&size=thumb`;',
+            $script
+        );
+        $this->assertStringContainsString('$download.href = `?photo=${photo.id}&size=original&download=1`;', $script);
+    }
+
+    public function testOriginalImageAccessKeepsFullResolutionWithoutGeneratingPreview(): void
+    {
+        $path = $this->root . '/photos/Urlaub/Meer.jpg';
+        imagejpeg(imagecreatetruecolor(3200, 2400), $path, 100);
+        $hash = hash_file('sha256', $path);
+        $this->library->index();
+        $original = $this->library->imagePath($this->library->photos()[0]->id, original: true);
+        $this->assertSame($path, $original);
+        $this->assertSame([3200, 2400], array_slice(getimagesize($original), 0, 2));
+        $this->assertSame($hash, hash_file('sha256', $original));
+        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.jpg'));
     }
 
     public function testMissingAndEscapingFilesAreNotServed(): void
@@ -168,6 +310,32 @@ final class PhotoButlerTest extends TestCase
         $this->library->index();
         $this->assertCount(5, $this->library->photos());
         $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM scan_state')->fetchColumn());
+    }
+
+    public function testPhotoPreviewsAreLimitedTo640Pixels(): void
+    {
+        $source = $this->root . '/photos/Urlaub/Meer.jpg';
+        imagejpeg(imagecreatetruecolor(1920, 1080), $source);
+        $this->library->index();
+        $id = $this->library->photos()[0]->id;
+        $size = getimagesize($this->library->imagePath($id));
+        $this->assertSame(640, $size[0]);
+        $this->assertSame(360, $size[1]);
+        $this->assertSame(1920, $this->library->photo($id)->width);
+    }
+
+    public function testExistingThumbnailIsReusedWithoutRegeneration(): void
+    {
+        $this->library->index();
+        $id = $this->library->photos()[0]->id;
+        $thumbnail = $this->library->imagePath($id);
+        $hash = hash_file('sha256', $thumbnail);
+        touch($thumbnail, 1234567890);
+        $this->library = new PhotoButler($this->root);
+        $this->assertSame($thumbnail, $this->library->imagePath($id, animated: true));
+        clearstatcache();
+        $this->assertSame(1234567890, filemtime($thumbnail));
+        $this->assertSame($hash, hash_file('sha256', $thumbnail));
     }
 
     public function testMissingThumbnailPreservesAiTagsAndIsRebuiltOnDemand(): void
@@ -338,13 +506,25 @@ final class PhotoButlerTest extends TestCase
         );
         fclose($pipes[0]);
         $accessToken = '';
-        $request = function (string $path, ?array $post = null) use ($address, &$accessToken): array {
+        $request = function (string $path, ?array $post = null, array $headers = []) use (
+            $address,
+            &$accessToken
+        ): array {
+            $responseHeaders = [];
             $handle = curl_init('http://' . $address . '/' . $path);
             curl_setopt_array($handle, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_COOKIEJAR => $this->root . '/cookies',
                 CURLOPT_COOKIEFILE => $this->root . '/cookies',
-                CURLOPT_TIMEOUT => 5
+                CURLOPT_TIMEOUT => 5,
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$responseHeaders): int {
+                    if (str_contains($line, ':')) {
+                        [$name, $value] = explode(':', $line, 2);
+                        $responseHeaders[strtolower(trim($name))] = trim($value);
+                    }
+                    return strlen($line);
+                }
             ]);
             if ($accessToken !== '') {
                 curl_setopt($handle, CURLOPT_COOKIE, 'access_token=' . $accessToken);
@@ -353,7 +533,7 @@ final class PhotoButlerTest extends TestCase
                 curl_setopt($handle, CURLOPT_POSTFIELDS, http_build_query($post));
             }
             $body = curl_exec($handle);
-            return [curl_getinfo($handle, CURLINFO_RESPONSE_CODE), $body];
+            return [curl_getinfo($handle, CURLINFO_RESPONSE_CODE), $body, $responseHeaders];
         };
         try {
             for ($attempt = 0; $attempt < 50; $attempt++) {
@@ -449,6 +629,35 @@ final class PhotoButlerTest extends TestCase
                 fclose($lock);
             }
             $this->assertSame(200, $request('?photo=' . $id . '&size=thumb')[0]);
+            foreach (['thumb', 'display'] as $size) {
+                $url = '?photo=' . $id . '&size=' . $size;
+                [$status, $body, $headers] = $request($url);
+                $this->assertSame(200, $status);
+                $this->assertSame('private, no-cache', $headers['cache-control']);
+                $etag = '"' . hash('sha256', $body) . '"';
+                $this->assertSame($etag, $headers['etag']);
+                foreach ([$etag, 'W/' . $etag, '"old", ' . $etag, '*'] as $condition) {
+                    [$status, $body, $headers] = $request($url, headers: ['If-None-Match: ' . $condition]);
+                    $this->assertSame(304, $status);
+                    $this->assertSame('', $body);
+                    $this->assertSame($etag, $headers['etag']);
+                }
+                $this->assertSame(200, $request($url, headers: ['If-None-Match: "outdated"'])[0]);
+            }
+            $source = $this->root . '/photos/Urlaub/Meer.jpg';
+            $image = imagecreatetruecolor(80, 60);
+            imagefill($image, 0, 0, imagecolorallocate($image, 255, 0, 0));
+            imagejpeg($image, $source);
+            touch($source, time() + 2);
+            clearstatcache();
+            $this->library->index();
+            [$status, $body, $headers] = $request($url, headers: ['If-None-Match: ' . $etag]);
+            $this->assertSame(200, $status);
+            $this->assertNotSame($etag, $headers['etag']);
+            $this->assertStringContainsString(
+                'no-store',
+                $request('?photo=' . $id . '&size=original')[2]['cache-control']
+            );
             [$status, $body] = $request('?detail=' . $id);
             $this->assertSame(200, $status);
             $detail = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
@@ -480,7 +689,7 @@ final class PhotoButlerTest extends TestCase
                     file_get_contents($this->root . '/.data/.env')
                 )
             );
-            $this->assertSame(401, $request('?photo=' . $id . '&size=thumb')[0]);
+            $this->assertSame(401, $request('?photo=' . $id . '&size=thumb', headers: ['If-None-Match: ' . $etag])[0]);
             $this->assertSame(
                 401,
                 $request('index.php/login', [

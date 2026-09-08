@@ -1,12 +1,17 @@
 {
-    "version": "1.0.1",
+    "version": "1.0.2",
     "private": true,
     "scripts": {
+        "test": "node --test tests/*.test.js",
         "format": "prettier --write .",
         "format:check": "prettier --check ."
     },
     "devDependencies": {
-        "prettier": ">=3",
-        "@prettier/plugin-php": ">=0.25"
+        "@prettier/plugin-php": ">=0.25",
+        "prettier": ">=3"
+    },
+    "dependencies": {
+        "@lottiefiles/dotlottie-web": "0.80.0",
+        "sharp": "0.35.4"
     }
 }

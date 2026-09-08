@@ -37,6 +37,6 @@ try {
         }
     }
 } catch (\RuntimeException | \JsonException $exception) {
-    fwrite(STDERR, "Photobutler konnte den Lauf nicht abschließen. Fotoquellen, .data/.env und Schreibrechte prüfen.\n");
+    fwrite(STDERR, "photobutler konnte den Lauf nicht abschließen. Fotoquellen, .data/.env und Schreibrechte prüfen.\n");
     exit(1);
 }

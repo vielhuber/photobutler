@@ -5,15 +5,18 @@ declare(strict_types=1) ?>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Anmelden · Photobutler</title>
+    <meta name="csrf-token" content="<?= $escape($csrf) ?>">
+    <title>Anmelden · photobutler</title>
     <link rel="icon" type="image/svg+xml" href="?asset=favicon.svg">
+    <script src="?asset=preferences.js"></script>
     <link rel="stylesheet" href="?asset=app.css">
-    <script src="?asset=login.js" defer></script>
+    <script type="module" src="?asset=navigation.js"></script>
 </head>
 <body class="login-page">
+    <p id="navigation-message" class="navigation-message" role="alert" hidden></p>
     <main class="login-card">
         <span class="brand-icon" aria-hidden="true">▧</span>
-        <h1>Photobutler</h1>
+        <h1>photobutler</h1>
         <form id="login-form" method="post" action="<?= $escape($basePath) ?>index.php/login">
             <input type="hidden" name="csrf" value="<?= $escape($csrf) ?>">
             <label for="username">Benutzername</label>

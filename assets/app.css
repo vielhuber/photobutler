@@ -7,6 +7,7 @@
     --green: #355846;
     --soft: #e8eee4;
     --sidebar-width: 250px;
+    --gallery-columns: 5;
 }
 * {
     box-sizing: border-box;
@@ -48,6 +49,20 @@ button:disabled {
 }
 .muted {
     color: var(--muted);
+}
+.page-loading {
+    cursor: progress;
+}
+.navigation-message {
+    position: fixed;
+    inset: 12px 20px auto auto;
+    z-index: 5;
+    max-width: min(420px, calc(100vw - 40px));
+    padding: 12px 18px;
+    border: 1px solid #d9b9b2;
+    border-radius: 10px;
+    background: #fff5f2;
+    color: #a73d31;
 }
 .sidebar {
     position: fixed;
@@ -147,7 +162,7 @@ button:disabled {
 .album-nav {
     overflow-y: auto;
     flex: 1;
-    min-height: 70px;
+    min-height: 0;
 }
 .truncate {
     overflow: hidden;
@@ -239,6 +254,18 @@ h1 {
     font-size: 10px;
     color: #889179;
     margin-top: 2px;
+}
+.sidebar-worker {
+    flex-shrink: 0;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+}
+.sidebar-worker .ai-note {
+    padding: 10px;
+    margin-bottom: 10px;
+}
+.sidebar-worker .worker-actions {
+    gap: 5px;
 }
 .worker {
     margin-bottom: 20px;
@@ -336,6 +363,21 @@ h2 {
     margin: 0;
     letter-spacing: -0.2px;
 }
+.gallery-view {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    font-size: 12px;
+}
+.gallery-view select {
+    font: inherit;
+    color: var(--ink);
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 8px;
+}
 .section-heading .muted {
     font-size: 10px;
 }
@@ -394,7 +436,7 @@ h2 {
 }
 .photo-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(var(--gallery-columns), minmax(0, 1fr));
     gap: 13px;
 }
 .photo-card {
@@ -413,6 +455,39 @@ h2 {
     height: 100%;
     object-fit: cover;
     transition: transform 0.3s;
+}
+[data-preview-state='loading'] > img,
+[data-preview-state='error'] > img {
+    opacity: 0;
+}
+[data-preview-state='loading']::after {
+    content: '';
+    position: absolute;
+    top: calc(50% - 12px);
+    left: calc(50% - 12px);
+    width: 24px;
+    height: 24px;
+    border: 3px solid #91a68b66;
+    border-top-color: #739565;
+    border-radius: 50%;
+    pointer-events: none;
+    animation: preview-loading 0.8s linear infinite;
+}
+[data-preview-state='error']::after {
+    content: 'vorschau nicht verfügbar';
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    color: #83967a;
+    font-size: 12px;
+    pointer-events: none;
+}
+@keyframes preview-loading {
+    to {
+        transform: rotate(360deg);
+    }
 }
 .photo-card:hover img {
     transform: scale(1.035);
@@ -455,11 +530,13 @@ h2 {
     margin: 0 0 16px;
     color: #6c7c61;
 }
-.pagination {
-    display: flex;
-    justify-content: center;
-    gap: 15px;
+.photo-loader {
+    min-height: 40px;
     margin: 25px 0;
+    text-align: center;
+}
+.photo-loader [hidden] {
+    display: none;
 }
 .empty {
     text-align: center;
@@ -489,17 +566,45 @@ h2 {
     padding: 0 12px;
 }
 dialog {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+    transition:
+        opacity 160ms ease,
+        transform 160ms ease,
+        display 160ms allow-discrete,
+        overlay 160ms allow-discrete;
     padding: 0;
     border: 0;
     border-radius: 15px;
-    width: min(1250px, 94vw);
+    width: 94vw;
     max-height: 92dvh;
     color: var(--ink);
     background: var(--paper);
 }
+dialog[open] {
+    opacity: 1;
+    transform: none;
+}
 dialog::backdrop {
+    opacity: 0;
+    transition:
+        opacity 160ms ease,
+        display 160ms allow-discrete,
+        overlay 160ms allow-discrete;
     background: #11231ad9;
     backdrop-filter: blur(8px);
+}
+dialog[open]::backdrop {
+    opacity: 1;
+}
+@starting-style {
+    dialog[open] {
+        opacity: 0;
+        transform: translateY(8px) scale(0.98);
+    }
+    dialog[open]::backdrop {
+        opacity: 0;
+    }
 }
 .viewer-layout {
     display: grid;
@@ -511,11 +616,13 @@ dialog::backdrop {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 600px;
+    min-height: 0;
+    height: 92dvh;
 }
 .viewer-stage img {
-    max-width: 100%;
-    max-height: 85dvh;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
     object-fit: contain;
 }
 .viewer-stage button {
@@ -543,6 +650,8 @@ dialog::backdrop {
 }
 .viewer-info {
     padding: 30px 25px;
+    max-height: 92dvh;
+    overflow-y: auto;
     overflow-wrap: anywhere;
 }
 .viewer-info h2 {
@@ -658,12 +767,6 @@ textarea,
     .main {
         padding: 0 28px;
     }
-    .ai-note {
-        display: none;
-    }
-    .photo-grid {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
     .album-cards {
         gap: 10px;
     }
@@ -672,6 +775,9 @@ textarea,
     }
 }
 @media (max-width: 760px) {
+    .gallery-view {
+        display: none;
+    }
     .sidebar-resize {
         display: none;
     }
@@ -715,9 +821,30 @@ textarea,
         top: 19px;
         right: 14px;
     }
+    .sidebar-worker {
+        position: fixed;
+        inset: auto 0 0;
+        z-index: 3;
+        margin: 0;
+        padding: 10px 20px max(10px, env(safe-area-inset-bottom));
+        background: #f0f3ed;
+        box-shadow: 0 -4px 20px #263b3410;
+    }
+    .sidebar-worker .ai-note {
+        padding: 0;
+        margin-bottom: 6px;
+        border: 0;
+        background: none;
+    }
+    .sidebar-worker .ai-note > span {
+        font-size: 22px;
+    }
+    .sidebar-worker #worker-progress {
+        margin-top: 6px;
+    }
     .main {
         margin-left: 0;
-        padding: 0 20px;
+        padding: 0 20px 240px;
     }
     .topbar {
         height: 57px;
@@ -745,21 +872,16 @@ textarea,
     .viewer-layout {
         grid-template-columns: 1fr;
     }
-    .viewer-stage {
-        min-height: 280px;
-    }
-    .viewer-stage img {
-        max-height: 50dvh;
-    }
     .viewer-info {
         padding: 24px;
+        max-height: none;
     }
     .login-card {
         padding: 30px;
     }
 }
 @media (prefers-reduced-motion: reduce) {
-    * {
+    *:not(dialog) {
         transition: none !important;
     }
 }

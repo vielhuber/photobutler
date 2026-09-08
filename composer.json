@@ -23,7 +23,9 @@
         "ext-curl": "*",
         "vielhuber/aihelper": "^5.1.2",
         "vielhuber/simpleauth": "^1.9.6",
-        "vlucas/phpdotenv": "^5.7.0"
+        "vlucas/phpdotenv": "^5.7.0",
+        "ext-zip": "*",
+        "ext-fileinfo": "*"
     },
     "autoload": {
         "psr-4": {

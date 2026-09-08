@@ -7,5 +7,5 @@ try {
     new \vielhuber\photobutler\PhotoButler(dirname(__DIR__))->run();
 } catch (\RuntimeException | \JsonException $exception) {
     http_response_code(503);
-    echo 'Photobutler ist nicht verfügbar. Bitte Konfiguration und Schreibrechte prüfen.';
+    echo 'photobutler ist nicht verfügbar. Bitte Konfiguration und Schreibrechte prüfen.';
 }

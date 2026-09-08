@@ -155,8 +155,10 @@ final class PhotoButler
                         continue;
                     }
                     $thumbnailPath = $this->dataPath . '/thumbnails/' . hash('sha256', $path) . '.jpg';
-                    if (is_file($thumbnailPath)) {
-                        unlink($thumbnailPath);
+                    foreach ([$thumbnailPath, $thumbnailPath . '.webp'] as $cachedPath) {
+                        if (is_file($cachedPath)) {
+                            unlink($cachedPath);
+                        }
                     }
                     $album = dirname(substr($path, strlen($directory->root) + 1));
                     $upsert->execute([
@@ -231,7 +233,7 @@ final class PhotoButler
     /**
      * Resolve an image only while its original remains inside a configured source.
      */
-    public function imagePath(int $id, bool $original = false): ?string
+    public function imagePath(int $id, bool $original = false, bool $animated = false): ?string
     {
         $statement = $this->database->prepare(
             'SELECT path, root, modified, bytes FROM photos WHERE id = ? AND available = 1'
@@ -278,16 +280,22 @@ final class PhotoButler
                     ]);
                     if ($save->rowCount() === 0) {
                         unlink($path);
+                        if (is_file($path . '.webp')) {
+                            unlink($path . '.webp');
+                        }
                         return null;
                     }
                 }
-            } catch (\RuntimeException | \ErrorException) {
+            } catch (\RuntimeException | \ErrorException | \JsonException) {
                 error_log('Vorschaubild konnte nicht erstellt werden für Foto ' . $id . '.');
                 return null;
             } finally {
                 flock($lock, LOCK_UN);
                 fclose($lock);
             }
+        }
+        if (!$original && $animated && is_file($path . '.webp')) {
+            return $path . '.webp';
         }
         return is_file($path) ? $path : null;
     }
@@ -425,7 +433,10 @@ final class PhotoButler
             return;
         }
         $asset = $_GET['asset'] ?? '';
-        if (is_string($asset) && in_array($asset, ['app.css', 'app.js', 'login.js', 'favicon.svg'], true)) {
+        if (
+            is_string($asset) &&
+            in_array($asset, ['app.css', 'app.js', 'login.js', 'navigation.js', 'preferences.js', 'favicon.svg'], true)
+        ) {
             $contentType = match ($asset) {
                 'app.css' => 'text/css',
                 'favicon.svg' => 'image/svg+xml',
@@ -611,15 +622,32 @@ final class PhotoButler
         }
         if (isset($_GET['photo'])) {
             $original = ($_GET['size'] ?? '') === 'original';
-            $path = $this->imagePath((int) $_GET['photo'], $original);
+            $path = $this->imagePath((int) $_GET['photo'], $original, ($_GET['size'] ?? '') === 'display');
             if ($path === null) {
                 http_response_code(404);
                 return;
             }
-            header(
-                'Content-Type: ' .
-                    ($original ? getimagesize($path)['mime'] ?? 'application/octet-stream' : 'image/jpeg')
-            );
+            if (
+                !$original &&
+                !isset($_GET['download']) &&
+                in_array($_SERVER['REQUEST_METHOD'], ['GET', 'HEAD'], true)
+            ) {
+                $etag = '"' . hash_file('sha256', $path) . '"';
+                header_remove('Pragma');
+                header_remove('Expires');
+                header('Cache-Control: private, no-cache');
+                header('Vary: Cookie');
+                header('ETag: ' . $etag);
+                $conditions = array_map(
+                    static fn(string $value): string => preg_replace('/^W\//', '', trim($value)),
+                    explode(',', $_SERVER['HTTP_IF_NONE_MATCH'] ?? '')
+                );
+                if (in_array($etag, $conditions, true) || in_array('*', $conditions, true)) {
+                    http_response_code(304);
+                    return;
+                }
+            }
+            header('Content-Type: ' . new \finfo(FILEINFO_MIME_TYPE)->file($path));
             header('Content-Length: ' . filesize($path));
             if (isset($_GET['download'])) {
                 header("Content-Disposition: attachment; filename*=UTF-8''" . rawurlencode(basename($path)));
@@ -710,6 +738,16 @@ final class PhotoButler
      */
     private function generateThumbnail(string $source, string $target): \stdClass
     {
+        $header = file_get_contents($source, false, null, 0, 21);
+        if (
+            str_starts_with($header, "PK\x03\x04") ||
+            (strlen($header) === 21 &&
+                substr($header, 0, 4) === 'RIFF' &&
+                substr($header, 8, 8) === 'WEBPVP8X' &&
+                (ord($header[20]) & 2) !== 0)
+        ) {
+            return new StickerRenderer()->render($source, $target);
+        }
         $size = getimagesize($source);
         if (
             $size === false ||
@@ -743,11 +781,11 @@ final class PhotoButler
         }
         $width = imagesx($image);
         $height = imagesy($image);
-        $scale = min(1, 1280 / max($width, $height));
+        $scale = min(1, 640 / max($width, $height));
         $thumbnail = imagecreatetruecolor(max(1, (int) round($width * $scale)), max(1, (int) round($height * $scale)));
         imagefill($thumbnail, 0, 0, imagecolorallocate($thumbnail, 246, 245, 241));
         imagecopyresampled($thumbnail, $image, 0, 0, 0, 0, imagesx($thumbnail), imagesy($thumbnail), $width, $height);
-        if (!imagejpeg($thumbnail, $target . '.tmp', 82) || !rename($target . '.tmp', $target)) {
+        if (!imagejpeg($thumbnail, $target . '.tmp', 65) || !rename($target . '.tmp', $target)) {
             throw new \RuntimeException('Vorschaubild konnte nicht gespeichert werden.');
         }
         $date = \DateTimeImmutable::createFromFormat('!Y:m:d H:i:s', (string) ($exif['DateTimeOriginal'] ?? ''));

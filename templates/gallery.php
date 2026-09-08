@@ -6,12 +6,14 @@ declare(strict_types=1) ?>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="<?= $escape($csrf) ?>">
-    <title><?= $escape($title) ?> · Photobutler</title>
+    <title><?= $escape($title) ?> · photobutler</title>
     <link rel="icon" type="image/svg+xml" href="?asset=favicon.svg">
+    <script src="?asset=preferences.js"></script>
     <link rel="stylesheet" href="?asset=app.css">
-    <script src="?asset=app.js" defer></script>
+    <script type="module" src="?asset=navigation.js"></script>
 </head>
 <body>
+    <p id="navigation-message" class="navigation-message" role="alert" hidden></p>
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-resize" id="sidebar-resize" role="separator" tabindex="0" aria-label="Breite der Seitenleiste" aria-orientation="vertical" aria-controls="sidebar" aria-valuemin="210" aria-valuemax="640" aria-valuenow="250"></div>
         <a class="brand" href="./"><span class="brand-icon" aria-hidden="true">▧</span> photobutler<span class="brand-dot">.</span></a>
@@ -39,6 +41,25 @@ declare(strict_types=1) ?>
             <?php endforeach; ?>
             <?php if ($albums === []): ?><p class="muted sidebar-hint">Noch keine Alben.</p><?php endif; ?>
         </nav>
+        <section class="worker sidebar-worker" aria-label="KI-Verschlagwortung">
+            <div class="ai-note"><span aria-hidden="true">✧</span><div><strong id="tag-count"><?= $stats[
+                'tagged'
+            ] ?> Fotos mit KI-Tags</strong><small id="tag-pending" data-queued="<?= (int) $stats[
+     'queued'
+ ] ?>"><?= (int) $stats['total'] - (int) $stats['tagged'] ?> noch offen<?= (int) $stats['errors'] > 0
+     ? ' · ' . $stats['errors'] . ' mit Fehler'
+     : '' ?></small></div></div>
+            <div class="worker-actions">
+                <button id="tag-start" class="chip" type="button">KI-Tags erstellen</button>
+                <button id="worker-stop" class="chip" type="button" hidden>Stoppen</button>
+                <a id="worker-refresh" class="chip" href="" hidden>Galerie aktualisieren</a>
+            </div>
+            <progress id="worker-progress" aria-label="Fortschritt" max="<?= max(
+                1,
+                (int) $stats['total']
+            ) ?>" value="<?= (int) $stats['tagged'] ?>"></progress>
+            <p id="worker-message" class="muted" role="status">Automatisch, solange diese Seite geöffnet ist.</p>
+        </section>
         <div class="storage-note"><span class="status-dot"></span> Selbst gehostet</div>
         <form method="post" class="logout-form"><input type="hidden" name="csrf" value="<?= $escape(
             $csrf
@@ -55,25 +76,9 @@ declare(strict_types=1) ?>
     ',',
     '.'
 ) ?> Fotos · <?= count($albums) ?> Alben</p></div>
-            <div class="ai-note"><span aria-hidden="true">✧</span><div><strong id="tag-count"><?= $stats[
-                'tagged'
-            ] ?> Fotos mit KI-Tags</strong><small id="tag-pending"><?= (int) $stats['total'] -
-     (int) $stats['tagged'] ?> noch offen<?= (int) $stats['errors'] > 0
-     ? ' · ' . $stats['errors'] . ' mit Fehler'
-     : '' ?></small></div></div>
         </section>
         <section class="worker" aria-label="Fotoverwaltung">
-            <div class="worker-actions">
-                <button id="scan-start" class="chip" type="button">Fotos einlesen</button>
-                <button id="tag-start" class="chip" type="button">KI-Tags erstellen</button>
-                <button id="worker-stop" class="chip" type="button" hidden>Stoppen</button>
-                <a id="worker-refresh" class="chip" href="" hidden>Galerie aktualisieren</a>
-            </div>
-            <progress id="worker-progress" aria-label="Fortschritt" max="<?= max(
-                1,
-                (int) $stats['total']
-            ) ?>" value="<?= (int) $stats['tagged'] ?>" hidden></progress>
-            <p id="worker-message" class="muted" role="status"></p>
+            <button id="scan-start" class="chip" type="button">Fotos einlesen</button>
         </section>
         <form class="search" method="get" role="search"><span aria-hidden="true">⌕</span><input aria-label="Fotos durchsuchen" name="q" value="<?= $escape(
             $query
@@ -96,9 +101,9 @@ declare(strict_types=1) ?>
             ) ?>)</h2><span aria-hidden="true">▾</span></summary><div class="album-cards"><?php foreach (
     $albums
     as $item
-): ?><a class="album-card" href="?album=<?= rawurlencode($item['album']) ?>"><img src="?photo=<?= $item[
-    'cover'
-] ?>&amp;size=thumb" alt="" loading="lazy"><div><strong><?= $escape(
+): ?><a class="album-card" data-preview-state="loading" aria-busy="true" href="?album=<?= rawurlencode(
+    $item['album']
+) ?>"><img src="?photo=<?= $item['cover'] ?>&amp;size=display" alt="" loading="lazy"><div><strong><?= $escape(
     basename($item['album'])
 ) ?></strong><span><?= $item[
     'total'
@@ -106,7 +111,7 @@ declare(strict_types=1) ?>
         <?php endif; ?>
         <section class="photos-section"><div class="section-heading"><h2><?= $query !== '' || $tag !== ''
             ? 'Suchergebnisse'
-            : 'Fotos' ?></h2><span class="muted">Neueste zuerst · Seite <?= $page ?></span></div>
+            : 'Fotos' ?></h2><label class="gallery-view" for="gallery-columns">Spalten <select id="gallery-columns"><option value="5">5</option><option value="6">6</option><option value="7">7</option></select></label><span class="muted">Neueste zuerst</span></div>
             <?php if (
                 $album !== '' ||
                 $query !== '' ||
@@ -116,9 +121,9 @@ declare(strict_types=1) ?>
                 <?php foreach (
                     $photos
                     as $photo
-                ): ?><button class="photo-card" type="button" data-photo="<?= $photo->id ?>" aria-label="<?= $escape(
+                ): ?><button class="photo-card" data-preview-state="loading" aria-busy="true" type="button" data-photo="<?= $photo->id ?>" aria-label="<?= $escape(
     $photo->name
-) ?> öffnen"><img src="?photo=<?= $photo->id ?>&amp;size=thumb" alt="<?= $escape(
+) ?> öffnen"><img src="?photo=<?= $photo->id ?>&amp;size=display" alt="<?= $escape(
     $photo->description !== '' ? $photo->description : $photo->name
 ) ?>" loading="lazy"<?= $photo->width > 0 && $photo->height > 0
     ? ' width="' . $photo->width . '" height="' . $photo->height . '"'
@@ -135,16 +140,14 @@ declare(strict_types=1) ?>
     : 'Keine Fotos gefunden' ?></h2><p><?= (int) $stats['total'] === 0
     ? 'Fotoordner einlesen, um Alben anzuzeigen.'
     : 'Suchbegriff ändern oder Filter entfernen.' ?></p></div><?php endif; ?>
-            <nav class="pagination" aria-label="Seiten"><?php
-            if ($page > 1): ?><a class="chip" href="?<?= $escape(
-    http_build_query($pagination + ['page' => $page - 1])
-) ?>">← Zurück</a><?php endif;
-            if (count($photos) === 60): ?><a class="chip" href="?<?= $escape(
-    http_build_query($pagination + ['page' => $page + 1])
-) ?>">Weiter →</a><?php endif;
-            ?></nav>
+            <div id="photo-loader" class="photo-loader" data-next="<?= count($photos) === 60
+                ? '?' . $escape(http_build_query($pagination + ['page' => $page + 1]))
+                : '' ?>">
+                <p id="photo-load-message" class="muted" role="status"></p>
+                <button id="photo-retry" class="chip" type="button" hidden>Erneut versuchen</button>
+            </div>
         </section>
     </main>
-    <dialog id="viewer" aria-labelledby="viewer-title"><div class="viewer-layout"><div class="viewer-stage"><button class="viewer-close" type="button" aria-label="Bildansicht schließen">×</button><button class="viewer-previous" type="button" aria-label="Vorheriges Foto">‹</button><img id="viewer-image" alt=""><button class="viewer-next" type="button" aria-label="Nächstes Foto">›</button></div><section class="viewer-info"><h2 id="viewer-title"></h2><p id="viewer-date" class="muted"></p><p id="viewer-description"></p><p id="viewer-status" class="muted"></p><button id="viewer-favorite" class="chip" type="button">♡ Als Favorit</button><form id="tag-form"><label for="viewer-tags">Schlagwörter</label><textarea id="viewer-tags" rows="4" placeholder="Tags mit Komma trennen"></textarea><small class="muted">Eigene Tags ersetzen KI-Tags.</small><button class="primary" type="submit">Tags speichern</button></form><a id="viewer-download" class="download" href="./">Original herunterladen ↗</a><p id="viewer-message" role="status"></p></section></div></dialog>
+    <dialog id="viewer" aria-labelledby="viewer-title"><div class="viewer-layout"><div class="viewer-stage" data-preview-state="loading" aria-busy="true"><button class="viewer-close" type="button" aria-label="Bildansicht schließen">×</button><button class="viewer-previous" type="button" aria-label="Vorheriges Foto">‹</button><img id="viewer-image" alt=""><button class="viewer-next" type="button" aria-label="Nächstes Foto">›</button></div><section class="viewer-info"><h2 id="viewer-title"></h2><p id="viewer-date" class="muted"></p><p id="viewer-description"></p><p id="viewer-status" class="muted"></p><button id="viewer-favorite" class="chip" type="button">♡ Als Favorit</button><form id="tag-form"><label for="viewer-tags">Schlagwörter</label><textarea id="viewer-tags" rows="4" placeholder="Tags mit Komma trennen"></textarea><small class="muted">Eigene Tags ersetzen KI-Tags.</small><button class="primary" type="submit">Tags speichern</button></form><a id="viewer-download" class="download" href="./">Original herunterladen ↗</a><p id="viewer-message" role="status"></p></section></div></dialog>
 </body>
 </html>

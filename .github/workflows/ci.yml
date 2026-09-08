@@ -16,15 +16,16 @@ jobs:
             - uses: shivammathur/setup-php@v2
               with:
                   php-version: '${{ matrix.php }}'
-                  extensions: pdo_sqlite, gd, exif, mbstring, curl
+                  extensions: pdo_sqlite, gd, exif, mbstring, curl, zip, fileinfo
                   tools: composer
             - run: composer install --no-interaction --prefer-dist
             - run: composer validate --strict
             - run: composer lint
-            - run: composer test
             - uses: actions/setup-node@v4
               with:
                   node-version-file: .nvmrc
             - run: npm install --ignore-scripts
+            - run: composer test
+            - run: npm test
             - run: npm run format:check
             - run: node --check assets/app.js && node --check assets/login.js
