@@ -137,6 +137,70 @@ final class PhotoButlerTest extends TestCase
         $this->assertCount(3, $this->library->photos());
     }
 
+    public function testScanDiscoversAlbumsWithoutOpeningImageContents(): void
+    {
+        for ($number = 0; $number < 12; $number++) {
+            mkdir($this->root . '/photos/album-' . $number);
+            file_put_contents($this->root . '/photos/album-' . $number . '/photo.jpg', 'not downloaded');
+        }
+        $this->assertSame(13, $this->library->index());
+        $this->assertSame(
+            13,
+            (int) $this->library->database->query('SELECT COUNT(DISTINCT album) FROM photos')->fetchColumn()
+        );
+        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.jpg'));
+    }
+
+    public function testScanResumesAcrossInstancesAndFinishesUnchangedBatches(): void
+    {
+        for ($number = 0; $number < 5; $number++) {
+            copy($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/photo-' . $number . '.jpg');
+        }
+        $this->assertSame(2, $this->library->index(limit: 2));
+        $this->library = new PhotoButler($this->root);
+        $this->assertSame(2, $this->library->index(limit: 2));
+        $this->library->index();
+        $this->assertCount(6, $this->library->photos());
+        unlink($this->root . '/photos/Urlaub/photo-4.jpg');
+        $this->assertSame(0, $this->library->index(limit: 2));
+        $this->assertCount(6, $this->library->photos());
+        $this->assertSame(1, (int) $this->library->database->query('SELECT COUNT(*) FROM scan_state')->fetchColumn());
+        $this->library->index();
+        $this->assertCount(5, $this->library->photos());
+        $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM scan_state')->fetchColumn());
+    }
+
+    public function testMissingThumbnailPreservesAiTagsAndIsRebuiltOnDemand(): void
+    {
+        $this->library->index();
+        $id = $this->library->photos()[0]->id;
+        $thumbnail = $this->library->imagePath($id);
+        $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Meer\"]'");
+        unlink($thumbnail);
+        $this->assertSame(0, $this->library->index());
+        $this->assertSame('done', $this->library->photo($id)->status);
+        $this->assertSame(['Meer'], $this->library->photo($id)->tags);
+        $this->assertFileExists($this->library->imagePath($id));
+    }
+
+    public function testUnreadablePreviewIsDeferredWithoutBlockingOtherPhotos(): void
+    {
+        file_put_contents($this->root . '/photos/Urlaub/Meer.jpg', 'unavailable image contents');
+        imagejpeg(imagecreatetruecolor(80, 60), $this->root . '/photos/Urlaub/Zweiter.jpg');
+        file_put_contents(
+            $this->root . '/.data/.env',
+            "AI_PROVIDER=cliproxyapi\nAI_MODEL=test\nAI_BASE_URL=http://127.0.0.1:1\nAI_API_KEY=test-only\n",
+            FILE_APPEND
+        );
+        $this->library = new PhotoButler($this->root);
+        $this->library->index();
+        $this->assertSame(0, $this->library->tag(limit: 1));
+        $this->assertSame('error', $this->library->photo(1)->status);
+        $this->assertSame('pending', $this->library->photo(2)->status);
+        $stats = new ReflectionMethod(PhotoButler::class, 'photoStats')->invoke($this->library);
+        $this->assertSame(1, $stats['queued']);
+    }
+
     public function testOversizedManualTagsAreRejectedWithoutReplacingExistingTags(): void
     {
         $this->library->index();
@@ -165,9 +229,10 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(5, exif_read_data($path)['Orientation']);
         $this->library->index();
         $photo = $this->library->photos()[0];
+        $thumbnail = $this->library->imagePath($photo->id);
+        $photo = $this->library->photo($photo->id);
         $this->assertSame(60, $photo->width);
         $this->assertSame(80, $photo->height);
-        $thumbnail = $this->library->imagePath($photo->id);
         $preview = imagecreatefromjpeg($thumbnail);
         $color = imagecolorsforindex($preview, imagecolorat($preview, 5, 5));
         $this->assertGreaterThan(200, $color['red']);
@@ -301,6 +366,9 @@ final class PhotoButlerTest extends TestCase
             $this->assertSame(200, $status);
             preg_match('/name="csrf" value="([^"]+)"/', $body, $match);
             $csrf = $match[1];
+            foreach (['scan', 'tag'] as $action) {
+                $this->assertSame(401, $request('', ['action' => $action, 'csrf' => $csrf])[0]);
+            }
             $this->assertSame(401, $request('?photo=' . $id . '&size=thumb')[0]);
             $this->assertSame(404, $request('.data/.env')[0]);
             $this->assertSame(404, $request('vendor/autoload.php')[0]);
@@ -355,6 +423,31 @@ final class PhotoButlerTest extends TestCase
             $this->assertStringContainsString('data-photo="' . $id . '"', $body);
             preg_match('/name="csrf-token" content="([^"]+)"/', $body, $match);
             $csrf = $match[1];
+            foreach (['scan', 'tag'] as $action) {
+                $this->assertSame(403, $request('', ['action' => $action, 'csrf' => 'wrong'])[0]);
+            }
+            [$status, $body] = $request('', ['action' => 'tag', 'csrf' => $csrf]);
+            $this->assertSame(503, $status);
+            $this->assertArrayHasKey('error', json_decode($body, true, flags: JSON_THROW_ON_ERROR));
+            for ($number = 0; $number < 11; $number++) {
+                copy($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/extra-' . $number . '.jpg');
+            }
+            foreach ([11, 0] as $expected) {
+                [$status, $body] = $request('', ['action' => 'scan', 'csrf' => $csrf]);
+                $this->assertSame(200, $status);
+                $result = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+                $this->assertSame($expected, $result['processed']);
+            }
+            $this->assertSame(12, $result['stats']['total']);
+            $this->assertSame(12, $result['stats']['queued']);
+            $lock = fopen($this->root . '/.data/index.lock', 'c');
+            flock($lock, LOCK_EX);
+            try {
+                $this->assertSame(409, $request('', ['action' => 'scan', 'csrf' => $csrf])[0]);
+            } finally {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
             $this->assertSame(200, $request('?photo=' . $id . '&size=thumb')[0]);
             [$status, $body] = $request('?detail=' . $id);
             $this->assertSame(200, $status);

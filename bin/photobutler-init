@@ -6,7 +6,7 @@ require $_composer_autoload_path ?? __DIR__ . '/../vendor/autoload.php';
 
 $root = getcwd();
 if ($root === false) {
-    fwrite(STDERR, "Arbeitsverzeichnis nicht verfügbar.\n");
+    fwrite(STDERR, "Working directory unavailable.\n");
     exit(1);
 }
 $package = dirname(__DIR__);
@@ -41,4 +41,4 @@ if (!is_file($root . '/public/index.php') || file_get_contents($root . '/public/
 if (!is_file($root . '/public/.htaccess')) {
     copy($package . '/public/.htaccess', $root . '/public/.htaccess');
 }
-echo "Photobutler eingerichtet.\n1. .data/.env bearbeiten (Fotoquellen, KI und Login-Daten).\n2. vendor/bin/photobutler-index --scan-only\n3. Eigenen Webserver auf public/ konfigurieren\n";
+echo "Photobutler initialized.\n1. Edit .data/.env (photo sources, AI and login credentials).\n2. Point your webserver to public/.\n3. Sign in through your browser, scan photos and generate AI tags.\n";

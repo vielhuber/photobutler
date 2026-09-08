@@ -12,7 +12,8 @@ declare(strict_types=1) ?>
     <script src="?asset=app.js" defer></script>
 </head>
 <body>
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-resize" id="sidebar-resize" role="separator" tabindex="0" aria-label="Breite der Seitenleiste" aria-orientation="vertical" aria-controls="sidebar" aria-valuemin="210" aria-valuemax="640" aria-valuenow="250"></div>
         <a class="brand" href="./"><span class="brand-icon" aria-hidden="true">▧</span> photobutler<span class="brand-dot">.</span></a>
         <p class="nav-label">BIBLIOTHEK</p>
         <nav aria-label="Bibliothek">
@@ -54,12 +55,25 @@ declare(strict_types=1) ?>
     ',',
     '.'
 ) ?> Fotos · <?= count($albums) ?> Alben</p></div>
-            <div class="ai-note"><span aria-hidden="true">✧</span><div><strong><?= $stats[
+            <div class="ai-note"><span aria-hidden="true">✧</span><div><strong id="tag-count"><?= $stats[
                 'tagged'
-            ] ?> Fotos mit KI-Tags</strong><small><?= (int) $stats['total'] -
+            ] ?> Fotos mit KI-Tags</strong><small id="tag-pending"><?= (int) $stats['total'] -
      (int) $stats['tagged'] ?> noch offen<?= (int) $stats['errors'] > 0
      ? ' · ' . $stats['errors'] . ' mit Fehler'
      : '' ?></small></div></div>
+        </section>
+        <section class="worker" aria-label="Fotoverwaltung">
+            <div class="worker-actions">
+                <button id="scan-start" class="chip" type="button">Fotos einlesen</button>
+                <button id="tag-start" class="chip" type="button">KI-Tags erstellen</button>
+                <button id="worker-stop" class="chip" type="button" hidden>Stoppen</button>
+                <a id="worker-refresh" class="chip" href="" hidden>Galerie aktualisieren</a>
+            </div>
+            <progress id="worker-progress" aria-label="Fortschritt" max="<?= max(
+                1,
+                (int) $stats['total']
+            ) ?>" value="<?= (int) $stats['tagged'] ?>" hidden></progress>
+            <p id="worker-message" class="muted" role="status"></p>
         </section>
         <form class="search" method="get" role="search"><span aria-hidden="true">⌕</span><input aria-label="Fotos durchsuchen" name="q" value="<?= $escape(
             $query
@@ -77,16 +91,18 @@ declare(strict_types=1) ?>
     http_build_query(['tag' => $item['name'], 'album' => $album, 'favorites' => $favorites ? '1' : '0'])
 ) ?>"><?= $escape($item['name']) ?></a><?php endforeach; ?></nav><?php endif; ?>
         <?php if ($album === '' && !$favorites && $query === '' && $tag === '' && $page === 1 && $albums !== []): ?>
-            <section class="albums-section"><div class="section-heading"><h2>Alben</h2></div><div class="album-cards"><?php foreach (
-                array_slice($albums, 0, 4)
-                as $item
-            ): ?><a class="album-card" href="?album=<?= rawurlencode($item['album']) ?>"><img src="?photo=<?= $item[
+            <details class="albums-section"><summary class="section-heading"><h2>Alle Alben (<?= count(
+                $albums
+            ) ?>)</h2><span aria-hidden="true">▾</span></summary><div class="album-cards"><?php foreach (
+    $albums
+    as $item
+): ?><a class="album-card" href="?album=<?= rawurlencode($item['album']) ?>"><img src="?photo=<?= $item[
     'cover'
 ] ?>&amp;size=thumb" alt="" loading="lazy"><div><strong><?= $escape(
     basename($item['album'])
 ) ?></strong><span><?= $item[
     'total'
-] ?> Fotos <span aria-hidden="true">↗</span></span></div></a><?php endforeach; ?></div></section>
+] ?> Fotos <span aria-hidden="true">↗</span></span></div></a><?php endforeach; ?></div></details>
         <?php endif; ?>
         <section class="photos-section"><div class="section-heading"><h2><?= $query !== '' || $tag !== ''
             ? 'Suchergebnisse'
@@ -104,9 +120,9 @@ declare(strict_types=1) ?>
     $photo->name
 ) ?> öffnen"><img src="?photo=<?= $photo->id ?>&amp;size=thumb" alt="<?= $escape(
     $photo->description !== '' ? $photo->description : $photo->name
-) ?>" loading="lazy" width="<?= $photo->width ?>" height="<?= $photo->height ?>"><span class="photo-caption"><strong><?= $escape(
-    $photo->name
-) ?></strong><small><?= $escape(
+) ?>" loading="lazy"<?= $photo->width > 0 && $photo->height > 0
+    ? ' width="' . $photo->width . '" height="' . $photo->height . '"'
+    : '' ?>><span class="photo-caption"><strong><?= $escape($photo->name) ?></strong><small><?= $escape(
     substr($photo->taken, 0, 10)
 ) ?></small></span><span class="favorite-marker" data-favorite="<?= $photo->id ?>"><?= $photo->favorite
     ? '♥'

@@ -6,6 +6,7 @@
     --line: #e4e8e0;
     --green: #355846;
     --soft: #e8eee4;
+    --sidebar-width: 250px;
 }
 * {
     box-sizing: border-box;
@@ -51,12 +52,29 @@ button:disabled {
 .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
-    width: 250px;
+    width: var(--sidebar-width);
     padding: 35px 22px 20px;
     background: #f0f3ed;
     border-right: 1px solid var(--line);
     display: flex;
     flex-direction: column;
+}
+.sidebar-resize {
+    position: absolute;
+    inset: 0 -4px 0 auto;
+    width: 8px;
+    z-index: 2;
+    cursor: col-resize;
+    touch-action: none;
+}
+.sidebar-resize:hover,
+.sidebar-resize:focus-visible,
+.sidebar-resizing .sidebar-resize {
+    background: #93b99c80;
+}
+.sidebar-resizing {
+    user-select: none;
+    cursor: col-resize;
 }
 .brand {
     display: flex;
@@ -158,9 +176,8 @@ button:disabled {
     font-size: 12px;
 }
 .main {
-    margin-left: 250px;
+    margin-left: var(--sidebar-width);
     padding: 0 48px;
-    max-width: 1900px;
 }
 .topbar {
     height: 86px;
@@ -222,6 +239,30 @@ h1 {
     font-size: 10px;
     color: #889179;
     margin-top: 2px;
+}
+.worker {
+    margin-bottom: 20px;
+}
+.worker-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.worker [hidden] {
+    display: none;
+}
+#worker-progress {
+    width: 100%;
+    height: 6px;
+    margin-top: 14px;
+    accent-color: var(--green);
+}
+#worker-message {
+    margin: 8px 0 0;
+    font-size: 12px;
+}
+#worker-message:empty {
+    display: none;
 }
 .search {
     display: flex;
@@ -302,6 +343,9 @@ h2 {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 17px;
+}
+.albums-section > summary {
+    cursor: pointer;
 }
 .album-card {
     position: relative;
@@ -602,15 +646,16 @@ textarea,
     }
 }
 @media (max-width: 1100px) {
+    :root {
+        --sidebar-width: 210px;
+    }
     .sidebar {
-        width: 210px;
         padding: 28px 15px 18px;
     }
     .brand {
         font-size: 18px;
     }
     .main {
-        margin-left: 210px;
         padding: 0 28px;
     }
     .ai-note {
@@ -627,6 +672,9 @@ textarea,
     }
 }
 @media (max-width: 760px) {
+    .sidebar-resize {
+        display: none;
+    }
     .sidebar {
         position: relative;
         width: 100%;

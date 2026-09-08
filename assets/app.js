@@ -1,3 +1,54 @@
+let $sidebar = document.querySelector('#sidebar');
+let $sidebarResize = document.querySelector('#sidebar-resize');
+let sidebarWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
+let sidebarDragOffset = 0;
+try {
+    let savedWidth = Number(localStorage.getItem('photobutler.sidebarWidth'));
+    if (Number.isFinite(savedWidth) && savedWidth > 0) sidebarWidth = savedWidth;
+} catch {}
+
+function resizeSidebar(width) {
+    let maximum = Math.max(210, Math.min(640, innerWidth - 360));
+    let clampedWidth = Math.round(Math.max(210, Math.min(maximum, width)));
+    document.documentElement.style.setProperty('--sidebar-width', `${clampedWidth}px`);
+    $sidebarResize.setAttribute('aria-valuenow', clampedWidth);
+    $sidebarResize.setAttribute('aria-valuemax', maximum);
+    return clampedWidth;
+}
+
+function saveSidebarWidth() {
+    try {
+        localStorage.setItem('photobutler.sidebarWidth', String(sidebarWidth));
+    } catch {}
+}
+
+resizeSidebar(sidebarWidth);
+window.addEventListener('resize', () => resizeSidebar(sidebarWidth));
+$sidebarResize.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    $sidebarResize.focus();
+    sidebarDragOffset = event.clientX - $sidebar.getBoundingClientRect().width;
+    $sidebarResize.setPointerCapture(event.pointerId);
+    document.documentElement.classList.add('sidebar-resizing');
+});
+$sidebarResize.addEventListener('pointermove', event => {
+    if (!$sidebarResize.hasPointerCapture(event.pointerId)) return;
+    sidebarWidth = resizeSidebar(event.clientX - sidebarDragOffset);
+});
+$sidebarResize.addEventListener('lostpointercapture', () => {
+    document.documentElement.classList.remove('sidebar-resizing');
+    saveSidebarWidth();
+});
+$sidebarResize.addEventListener('keydown', event => {
+    let width = $sidebar.getBoundingClientRect().width;
+    let widths = { ArrowLeft: width - 10, ArrowRight: width + 10, Home: 210, End: 640 };
+    if (!(event.key in widths)) return;
+    event.preventDefault();
+    sidebarWidth = resizeSidebar(widths[event.key]);
+    saveSidebarWidth();
+});
+
 let $viewer = document.querySelector('#viewer');
 let $cards = [...document.querySelectorAll('[data-photo]')];
 let $image = document.querySelector('#viewer-image');
@@ -45,7 +96,7 @@ async function openPhoto(index) {
         $description.textContent = photo.description;
         $status.textContent = {
             pending: 'KI-Tags ausstehend',
-            error: 'KI-Fehler · erneuter Versuch folgt',
+            error: 'KI-Fehler · nach einer Stunde erneut starten',
             done: 'KI-Tags vorhanden'
         }[photo.status];
         $image.alt = photo.description || photo.name;
@@ -109,4 +160,76 @@ $favorite.addEventListener('click', () => savePhoto('favorite'));
 document.querySelector('#tag-form').addEventListener('submit', event => {
     event.preventDefault();
     savePhoto('tags');
+});
+
+let $scanStart = document.querySelector('#scan-start');
+let $tagStart = document.querySelector('#tag-start');
+let $workerStop = document.querySelector('#worker-stop');
+let $workerProgress = document.querySelector('#worker-progress');
+let $workerMessage = document.querySelector('#worker-message');
+let $workerRefresh = document.querySelector('#worker-refresh');
+let $tagCount = document.querySelector('#tag-count');
+let $tagPending = document.querySelector('#tag-pending');
+let workerRunning = false;
+let workerStopRequested = false;
+
+async function runWorker(action) {
+    if (workerRunning) return;
+    workerRunning = true;
+    workerStopRequested = false;
+    $scanStart.disabled = true;
+    $tagStart.disabled = true;
+    $workerStop.disabled = false;
+    $workerStop.hidden = false;
+    $workerProgress.hidden = false;
+    $workerMessage.textContent = action === 'scan' ? 'Fotos werden eingelesen …' : 'KI-Tags werden erstellt …';
+    if (action === 'scan') $workerProgress.removeAttribute('value');
+    let processed = 0;
+    try {
+        do {
+            let body = new FormData();
+            body.set('csrf', csrf);
+            body.set('action', action);
+            let response = await fetch('./', { method: 'POST', body });
+            if (response.status === 401 || response.status === 403) throw new Error('Bitte neu anmelden.');
+            if (!response.headers.get('content-type')?.includes('application/json'))
+                throw new Error('Keine gültige Antwort. Bitte die Seite neu laden.');
+            let result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Verarbeitung fehlgeschlagen.');
+            processed += result.processed;
+            $tagCount.textContent = `${result.stats.tagged} Fotos mit KI-Tags`;
+            $tagPending.textContent = `${result.stats.total - result.stats.tagged} noch offen${result.stats.errors ? ` · ${result.stats.errors} mit Fehler` : ''}`;
+            $workerProgress.max = Math.max(1, result.stats.total);
+            if (action === 'tag') $workerProgress.value = result.stats.tagged;
+            $workerRefresh.hidden = false;
+            let summary = `${processed} Fotos ${action === 'scan' ? 'eingelesen' : 'getaggt'}.`;
+            $workerMessage.textContent = summary;
+            if (workerStopRequested) {
+                $workerMessage.textContent = `Gestoppt. ${summary}`;
+                break;
+            }
+            if (!result.more) {
+                $workerMessage.textContent = `Fertig. ${summary}`;
+                if (action === 'tag' && result.stats.errors > 0)
+                    $workerMessage.textContent = `${summary} KI-Fehler: frühestens nach einer Stunde erneut starten.`;
+                break;
+            }
+        } while (!workerStopRequested);
+    } catch (error) {
+        $workerMessage.textContent = error.message;
+    } finally {
+        workerRunning = false;
+        $scanStart.disabled = false;
+        $tagStart.disabled = false;
+        $workerStop.hidden = true;
+        $workerProgress.hidden = true;
+    }
+}
+
+$scanStart.addEventListener('click', () => runWorker('scan'));
+$tagStart.addEventListener('click', () => runWorker('tag'));
+$workerStop.addEventListener('click', () => {
+    workerStopRequested = true;
+    $workerStop.disabled = true;
+    $workerMessage.textContent = 'Wird nach der laufenden Verarbeitung gestoppt …';
 });

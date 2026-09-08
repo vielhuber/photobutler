@@ -46,7 +46,8 @@ final class PhotoButler
             status TEXT NOT NULL DEFAULT 'pending', available INTEGER NOT NULL DEFAULT 1,
             seen TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0
         ); CREATE INDEX IF NOT EXISTS photos_listing ON photos(available, taken DESC, id DESC);
-        CREATE INDEX IF NOT EXISTS photos_queue ON photos(available, status, attempted);");
+        CREATE INDEX IF NOT EXISTS photos_queue ON photos(available, status, attempted);
+        CREATE TABLE IF NOT EXISTS scan_state (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL);");
     }
 
     /**
@@ -58,13 +59,13 @@ final class PhotoButler
     }
 
     /**
-     * Refresh changed photos while holding an exclusive scan lock.
+     * Resume file discovery without opening originals; limit counts inspected photos.
      */
     public function index(int $limit = PHP_INT_MAX): int
     {
         $lock = fopen($this->dataPath . '/index.lock', 'c');
         if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
-            throw new \RuntimeException('Dieser Hintergrundlauf läuft bereits.');
+            throw new \RuntimeException('Dieser Hintergrundlauf läuft bereits.', 409);
         }
         try {
             $roots = $this->photoPaths();
@@ -75,70 +76,120 @@ final class PhotoButler
                     );
                 }
             }
-            $seen = bin2hex(random_bytes(12));
+            $this->database->exec('BEGIN IMMEDIATE');
+            $saved = $this->database->query('SELECT state FROM scan_state WHERE id = 1')->fetchColumn();
+            $scan = $saved === false ? null : json_decode($saved, flags: JSON_THROW_ON_ERROR);
+            if ($scan === null || $scan->roots !== $roots) {
+                $scan = new \stdClass();
+                $scan->roots = $roots;
+                $scan->seen = bin2hex(random_bytes(12));
+                $scan->directories = [];
+                foreach (array_reverse($roots) as $root) {
+                    $directory = new \stdClass();
+                    $directory->root = $root;
+                    $directory->path = $root;
+                    $directory->after = '';
+                    $scan->directories[] = $directory;
+                }
+            }
             $processed = 0;
+            $visited = 0;
+            $deadline = $limit === PHP_INT_MAX ? INF : microtime(true) + 5;
             $find = $this->database->prepare('SELECT id, modified, bytes FROM photos WHERE path = ?');
             $mark = $this->database->prepare('UPDATE photos SET seen = ?, available = 1 WHERE id = ?');
             $upsert = $this->database
                 ->prepare("INSERT INTO photos (root, path, album, name, modified, bytes, width, height, taken, seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET root=excluded.root, album=excluded.album, modified=excluded.modified,
-                bytes=excluded.bytes, width=excluded.width, height=excluded.height, taken=excluded.taken,
+                bytes=excluded.bytes, width=0, height=0, taken=excluded.taken,
                 seen=excluded.seen, available=1, status='pending', attempted=0, ai_tags='[]', description=''");
-            foreach ($roots as $root) {
-                $files = new \RecursiveIteratorIterator(
-                    new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
-                );
-                foreach ($files as $file) {
+            while ($scan->directories !== [] && $visited < max(1, $limit) && microtime(true) < $deadline) {
+                $directory = $scan->directories[array_key_last($scan->directories)];
+                if (realpath($directory->path) !== $directory->path || !is_readable($directory->path)) {
+                    throw new \RuntimeException('Fotoordner nicht verfügbar. Index bleibt erhalten.');
+                }
+                $entries = $directory->entries ??= scandir($directory->path);
+                if ($entries === false) {
+                    throw new \RuntimeException('Fotoordner nicht lesbar. Index bleibt erhalten.');
+                }
+                $finished = true;
+                foreach ($entries as $entry) {
+                    if ($entry === '.' || $entry === '..' || strcmp($entry, $directory->after) <= 0) {
+                        continue;
+                    }
+                    if ($visited >= max(1, $limit) || microtime(true) >= $deadline) {
+                        $finished = false;
+                        break;
+                    }
+                    $path = $directory->path . '/' . $entry;
+                    $directory->after = $entry;
+                    if (is_link($path)) {
+                        continue;
+                    }
+                    if (is_dir($path)) {
+                        $child = new \stdClass();
+                        $child->root = $directory->root;
+                        $child->path = $path;
+                        $child->after = '';
+                        $scan->directories[] = $child;
+                        $finished = false;
+                        break;
+                    }
                     if (
-                        !$file->isFile() ||
-                        $file->isLink() ||
-                        !in_array(strtolower($file->getExtension()), ['jpg', 'jpeg', 'png', 'webp', 'gif'], true)
+                        !is_file($path) ||
+                        !in_array(
+                            strtolower(pathinfo($path, PATHINFO_EXTENSION)),
+                            ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+                            true
+                        )
                     ) {
                         continue;
                     }
-                    $path = $file->getPathname();
+                    $visited++;
+                    $modified = filemtime($path);
+                    $bytes = filesize($path);
                     $find->execute([$path]);
                     $existing = $find->fetch();
+                    if ($existing && (int) $existing['modified'] === $modified && (int) $existing['bytes'] === $bytes) {
+                        $mark->execute([$scan->seen, $existing['id']]);
+                        continue;
+                    }
                     $thumbnailPath = $this->dataPath . '/thumbnails/' . hash('sha256', $path) . '.jpg';
-                    if (
-                        $existing &&
-                        (int) $existing['modified'] === $file->getMTime() &&
-                        (int) $existing['bytes'] === $file->getSize() &&
-                        is_file($thumbnailPath)
-                    ) {
-                        $mark->execute([$seen, $existing['id']]);
-                        continue;
+                    if (is_file($thumbnailPath)) {
+                        unlink($thumbnailPath);
                     }
-                    if ($processed >= $limit) {
-                        return $processed;
-                    }
-                    try {
-                        $metadata = $this->generateThumbnail($path, $thumbnailPath);
-                    } catch (\RuntimeException) {
-                        trigger_error('Ein Foto konnte nicht indexiert werden.', E_USER_WARNING);
-                        continue;
-                    }
-                    $album = dirname(substr($path, strlen($root) + 1));
+                    $album = dirname(substr($path, strlen($directory->root) + 1));
                     $upsert->execute([
-                        $root,
+                        $directory->root,
                         $path,
-                        $album === '.' ? basename($root) : $album,
-                        $file->getFilename(),
-                        $file->getMTime(),
-                        $file->getSize(),
-                        $metadata->width,
-                        $metadata->height,
-                        $metadata->taken,
-                        $seen
+                        $album === '.' ? basename($directory->root) : $album,
+                        $entry,
+                        $modified,
+                        $bytes,
+                        date('Y-m-d H:i:s', $modified),
+                        $scan->seen
                     ]);
                     $processed++;
                 }
+                if ($finished) {
+                    array_pop($scan->directories);
+                }
             }
-            $missing = $this->database->prepare('UPDATE photos SET available = 0 WHERE seen <> ?');
-            $missing->execute([$seen]);
+            if ($scan->directories === []) {
+                $missing = $this->database->prepare('UPDATE photos SET available = 0 WHERE seen <> ?');
+                $missing->execute([$scan->seen]);
+                $this->database->exec('DELETE FROM scan_state');
+            }
+            if ($scan->directories !== []) {
+                $save = $this->database->prepare('INSERT OR REPLACE INTO scan_state (id, state) VALUES (1, ?)');
+                $save->execute([json_encode($scan, JSON_THROW_ON_ERROR)]);
+            }
+            $this->database->commit();
             return $processed;
         } finally {
+            if ($this->database->inTransaction()) {
+                $this->database->rollBack();
+            }
             flock($lock, LOCK_UN);
             fclose($lock);
         }
@@ -182,9 +233,12 @@ final class PhotoButler
      */
     public function imagePath(int $id, bool $original = false): ?string
     {
-        $statement = $this->database->prepare('SELECT path, root FROM photos WHERE id = ? AND available = 1');
+        $statement = $this->database->prepare(
+            'SELECT path, root, modified, bytes FROM photos WHERE id = ? AND available = 1'
+        );
         $statement->execute([$id]);
         $row = $statement->fetch();
+        $statement->closeCursor();
         if (
             !$row ||
             !in_array($row['root'], $this->photoPaths(), true) ||
@@ -195,6 +249,46 @@ final class PhotoButler
             return null;
         }
         $path = $original ? $row['path'] : $this->dataPath . '/thumbnails/' . hash('sha256', $row['path']) . '.jpg';
+        if (!$original && !is_file($path)) {
+            $lock = fopen($this->dataPath . '/thumbnail.lock', 'c');
+            if ($lock === false || !flock($lock, LOCK_EX)) {
+                throw new \RuntimeException('Vorschauerstellung nicht verfügbar.');
+            }
+            try {
+                clearstatcache(true, $path);
+                if (!is_file($path)) {
+                    set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
+                        throw new \ErrorException($message, 0, $severity, $file, $line);
+                    });
+                    try {
+                        $metadata = $this->generateThumbnail($row['path'], $path);
+                    } finally {
+                        restore_error_handler();
+                    }
+                    $save = $this->database->prepare(
+                        'UPDATE photos SET width = ?, height = ?, taken = ? WHERE id = ? AND modified = ? AND bytes = ? AND available = 1'
+                    );
+                    $save->execute([
+                        $metadata->width,
+                        $metadata->height,
+                        $metadata->taken,
+                        $id,
+                        $row['modified'],
+                        $row['bytes']
+                    ]);
+                    if ($save->rowCount() === 0) {
+                        unlink($path);
+                        return null;
+                    }
+                }
+            } catch (\RuntimeException | \ErrorException) {
+                error_log('Vorschaubild konnte nicht erstellt werden für Foto ' . $id . '.');
+                return null;
+            } finally {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
         return is_file($path) ? $path : null;
     }
 
@@ -234,7 +328,7 @@ final class PhotoButler
         }
         $lock = fopen($this->dataPath . '/tag.lock', 'c');
         if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
-            throw new \RuntimeException('Dieser Hintergrundlauf läuft bereits.');
+            throw new \RuntimeException('Dieser Hintergrundlauf läuft bereits.', 409);
         }
         try {
             $statement = $this->database->prepare("SELECT id, modified, bytes FROM photos WHERE available = 1
@@ -243,13 +337,13 @@ final class PhotoButler
             $photos = $statement->fetchAll();
             $completed = 0;
             foreach ($photos as $photo) {
-                $path = $this->imagePath((int) $photo['id']);
-                if ($path === null) {
-                    continue;
-                }
                 $attempt = $this->database->prepare('UPDATE photos SET attempted = ? WHERE id = ?');
                 $attempt->execute([time(), $photo['id']]);
                 try {
+                    $path = $this->imagePath((int) $photo['id']);
+                    if ($path === null) {
+                        throw new \RuntimeException('Vorschaubild nicht verfügbar.');
+                    }
                     $ai = aihelper::create(
                         provider: $this->getSetting('AI_PROVIDER'),
                         model: $this->getSetting('AI_MODEL'),
@@ -293,11 +387,10 @@ final class PhotoButler
                         "UPDATE photos SET status = 'error' WHERE id = ? AND modified = ? AND bytes = ?"
                     );
                     $failed->execute([$photo['id'], $photo['modified'], $photo['bytes']]);
-                    trigger_error(
+                    error_log(
                         'KI-Verschlagwortung fehlgeschlagen für Foto ' .
                             $photo['id'] .
-                            '. Erneuter Versuch frühestens in einer Stunde.',
-                        E_USER_WARNING
+                            '. Erneuter Versuch frühestens in einer Stunde.'
                     );
                 }
             }
@@ -435,6 +528,47 @@ final class PhotoButler
                 header('Location: ./', true, 303);
                 return;
             }
+            if (in_array($action, ['scan', 'tag'], true)) {
+                header('Content-Type: application/json; charset=utf-8');
+                if (!$authenticated) {
+                    http_response_code(401);
+                    echo json_encode(['error' => 'Bitte neu anmelden.']);
+                    return;
+                }
+                session_write_close();
+                set_time_limit(120);
+                try {
+                    $processed = $action === 'scan' ? $this->index(limit: 1000) : $this->tag(limit: 1);
+                    $stats = $this->photoStats();
+                    echo json_encode(
+                        [
+                            'processed' => $processed,
+                            'more' =>
+                                $action === 'scan'
+                                    ? (bool) $this->database->query('SELECT COUNT(*) FROM scan_state')->fetchColumn()
+                                    : $stats['queued'] > 0,
+                            'stats' => $stats
+                        ],
+                        JSON_THROW_ON_ERROR
+                    );
+                } catch (\RuntimeException | \JsonException $exception) {
+                    if ($exception->getCode() === 409) {
+                        http_response_code(409);
+                        echo json_encode([
+                            'error' => 'Ein anderer Lauf ist noch aktiv. Bitte später erneut versuchen.'
+                        ]);
+                        return;
+                    }
+                    http_response_code(503);
+                    echo json_encode([
+                        'error' =>
+                            $action === 'scan'
+                                ? 'Einlesen nicht möglich. Fotoquellen und Schreibrechte prüfen.'
+                                : 'Tagging nicht möglich. KI-Konfiguration prüfen und später erneut versuchen.'
+                    ]);
+                }
+                return;
+            }
             if ($authenticated && in_array($action, ['favorite', 'tags'], true)) {
                 $id = filter_var($_POST['id'] ?? null, FILTER_VALIDATE_INT);
                 if (!$id || $this->photo($id) === null) {
@@ -509,17 +643,28 @@ final class PhotoButler
                 'SELECT value AS name, COUNT(*) AS total FROM photos, json_each(COALESCE(manual_tags, ai_tags)) WHERE available = 1 GROUP BY value ORDER BY total DESC, value LIMIT 16'
             )
             ->fetchAll();
-        $stats = $this->database
-            ->query(
-                "SELECT COUNT(*) AS total, COALESCE(SUM(status = 'done'), 0) AS tagged, COALESCE(SUM(favorite), 0) AS favorites, COALESCE(SUM(status = 'error'), 0) AS errors FROM photos WHERE available = 1"
-            )
-            ->fetch();
+        $stats = $this->photoStats();
         $title = $album !== '' ? basename($album) : ($favorites ? 'Favoriten' : 'Fotos');
         if ($query !== '' || $tag !== '') {
             $title = $query !== '' ? 'Suche nach „' . $query . '“' : $tag;
         }
         $pagination = ['q' => $query, 'album' => $album, 'tag' => $tag, 'favorites' => $favorites ? '1' : '0'];
         require dirname(__DIR__) . '/templates/gallery.php';
+    }
+
+    /**
+     * Share gallery counts and eligible work across page loads and worker responses.
+     */
+    private function photoStats(): array
+    {
+        $statement = $this->database->prepare("SELECT COUNT(*) AS total,
+            COALESCE(SUM(status = 'done'), 0) AS tagged,
+            COALESCE(SUM(favorite), 0) AS favorites,
+            COALESCE(SUM(status = 'error'), 0) AS errors,
+            COALESCE(SUM(status = 'pending' OR (status = 'error' AND attempted < ?)), 0) AS queued
+            FROM photos WHERE available = 1");
+        $statement->execute([time() - 3600]);
+        return $statement->fetch();
     }
 
     /**
