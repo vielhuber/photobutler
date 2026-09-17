@@ -9,8 +9,15 @@
             );
         }
         let columns = localStorage.getItem('photobutler.galleryColumns');
-        if (['5', '6', '7'].includes(columns)) {
+        if (['3', '4', '5', '6', '7', '8', '9'].includes(columns)) {
             document.documentElement.style.setProperty('--gallery-columns', columns);
+            let observer = new MutationObserver(() => {
+                let $option = document.querySelector(`#gallery-columns option[value="${columns}"]`);
+                if (!$option) return;
+                $option.selected = true;
+                observer.disconnect();
+            });
+            observer.observe(document.documentElement, { childList: true, subtree: true });
         }
     } catch {}
 }

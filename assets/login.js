@@ -9,6 +9,8 @@ export function initializeLogin(navigatePage) {
         $error.textContent = '';
         try {
             let response = await fetch($form.action, { method: 'POST', body: new FormData($form) });
+            if (response.status === 403)
+                throw new Error('Sitzung ist abgelaufen oder ungültig. Bitte die Seite neu laden und erneut anmelden.');
             if (response.status === 429) throw new Error('Zu viele Versuche. Bitte in 15 Minuten erneut versuchen.');
             if (!response.ok) throw new Error('Benutzername oder Passwort stimmt nicht.');
             let result = await response.json();

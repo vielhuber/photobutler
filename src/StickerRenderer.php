@@ -16,21 +16,30 @@ final class StickerRenderer
         if (file_get_contents($source, false, null, 0, 4) === "PK\x03\x04") {
             $archive = new \ZipArchive();
             if ($archive->open($source, \ZipArchive::RDONLY) !== true) {
-                throw new \RuntimeException('Sticker-Archiv nicht lesbar.');
+                throw new \UnexpectedValueException('Sticker-Archiv nicht lesbar.');
             }
             try {
                 $entry = $archive->statName('animation/animation.json');
                 if ($entry === false || $entry['size'] > self::MAX_JSON_BYTES) {
-                    throw new \RuntimeException('Sticker-Animation fehlt oder ist zu groß.');
+                    throw new \UnexpectedValueException('Sticker-Animation fehlt oder ist zu groß.');
                 }
                 $json = $archive->getFromName('animation/animation.json', self::MAX_JSON_BYTES);
             } finally {
                 $archive->close();
             }
             if ($json === false) {
-                throw new \RuntimeException('Sticker-Animation nicht lesbar.');
+                throw new \UnexpectedValueException('Sticker-Animation nicht lesbar.');
             }
             $animation = json_decode($json, flags: JSON_THROW_ON_ERROR);
+            if (
+                !($animation instanceof \stdClass) ||
+                !is_numeric($animation->w ?? null) ||
+                !is_numeric($animation->h ?? null) ||
+                $animation->w <= 0 ||
+                $animation->h <= 0
+            ) {
+                throw new \UnexpectedValueException('Sticker-Abmessungen nicht auswertbar.');
+            }
             $width = $animation->w;
             $height = $animation->h;
             $input = $json;

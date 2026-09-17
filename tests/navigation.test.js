@@ -14,11 +14,13 @@ function startNavigation({ login = false } = {}) {
     let location = { href: 'https://photobutler.rebuhleiv.xyz/', origin: 'https://photobutler.rebuhleiv.xyz' };
     let history = [];
     let current;
+    let ratingState = { version: 0, pending: null };
     function page(isLogin = false, title = 'photobutler') {
         let result = {
             title,
             body: { className: isLogin ? 'login-page' : '' },
             querySelector: selector => {
+                if (selector === '#gallery-sort') return { dataset: { seed: '0123456789abcdef' } };
                 if (selector === '.photo-grid') return isLogin ? null : {};
                 if (selector === '#login-form') return isLogin ? {} : null;
                 if (selector === 'meta[name="csrf-token"]') return { content: title };
@@ -61,7 +63,21 @@ function startNavigation({ login = false } = {}) {
         initializeGallery: () => {
             mounted++;
             loginCsrf.push(csrf.content);
-            return { update: next => updates.push(next), dispose: () => disposed++, syncPhoto() {} };
+            return {
+                update(next) {
+                    updates.push(next);
+                    let query = next.querySelector;
+                    next.querySelector = selector => (selector === '#gallery-sort' ? null : query(selector));
+                },
+                dispose: () => disposed++,
+                syncPhoto() {},
+                get ratingVersion() {
+                    return ratingState.version;
+                },
+                get pendingRatingSave() {
+                    return ratingState.pending;
+                }
+            };
         },
         initializeLogin() {},
         DOMParser: class {
@@ -78,6 +94,7 @@ function startNavigation({ login = false } = {}) {
     return {
         ...navigation,
         page,
+        ratingState,
         requests,
         updates,
         history,
@@ -157,4 +174,137 @@ test('refreshing the current URL replaces history and keeps the worker instance'
     assert.equal(app.history[0].method, 'replaceState');
     assert.equal(app.mounted, 1);
     assert.equal(app.disposed, 0);
+});
+
+test('sorting keeps filters and image URLs, resets pagination and preserves the running gallery', async () => {
+    let app = startNavigation();
+    let navigation = app.navigatePage('?q=Meer&album=Urlaub&tag=Meer&favorites=1&page=3&image=42');
+    app.requests[0].resolve({ ok: true, text: async () => app.page() });
+    await navigation;
+    app.listeners.change({ target: { id: 'gallery-sort', value: 'oldest' } });
+    let url = new URL(app.requests[1].url);
+    assert.equal(url.searchParams.get('sort'), 'oldest');
+    assert.equal(url.searchParams.has('page'), false);
+    for (let [key, value] of Object.entries({ q: 'Meer', album: 'Urlaub', tag: 'Meer', favorites: '1', image: '42' }))
+        assert.equal(url.searchParams.get(key), value);
+    app.requests[1].resolve({ ok: true, text: async () => app.page() });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(app.mounted, 1);
+    assert.equal(app.disposed, 0);
+    assert.equal(app.updates.length, 2);
+    assert.equal(app.history[1].method, 'pushState');
+    app.listeners.change({ target: { id: 'gallery-columns', value: '7' } });
+    assert.equal(app.requests.length, 2);
+});
+
+test('person filters preserve combined filters and the gallery worker without reloading', async () => {
+    let app = startNavigation();
+    let navigation = app.navigatePage('?q=Meer&album=Urlaub&tag=Meer&favorites=1&sort=oldest&page=3');
+    app.requests[0].resolve({ ok: true, text: async () => app.page() });
+    await navigation;
+    app.listeners.change({ target: { id: 'gallery-person', value: '42' } });
+    let url = new URL(app.requests[1].url);
+    assert.equal(url.searchParams.get('person'), '42');
+    assert.equal(url.searchParams.has('page'), false);
+    for (let [key, value] of Object.entries({
+        q: 'Meer',
+        album: 'Urlaub',
+        tag: 'Meer',
+        favorites: '1',
+        sort: 'oldest'
+    }))
+        assert.equal(url.searchParams.get(key), value);
+    app.requests[1].resolve({ ok: true, text: async () => app.page() });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(app.mounted, 1);
+    assert.equal(app.disposed, 0);
+});
+
+test('relevance and random sorting preserve filters and a stable seed without remounting', async () => {
+    let app = startNavigation();
+    let navigation = app.navigatePage('?q=Meer&tag=Meer&favorites=1&person=7&page=3');
+    app.requests[0].resolve({ ok: true, text: async () => app.page() });
+    await navigation;
+    app.listeners.change({ target: { id: 'gallery-sort', value: 'random' } });
+    app.requests[1].resolve({ ok: true, text: async () => app.page() });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(new URL(app.history.at(-1).url).searchParams.get('seed'), '0123456789abcdef');
+    app.listeners.change({ target: { id: 'gallery-relevance', value: 'relevant' } });
+    let url = new URL(app.requests[2].url);
+    for (let [key, value] of Object.entries({
+        q: 'Meer',
+        tag: 'Meer',
+        favorites: '1',
+        person: '7',
+        sort: 'random',
+        seed: '0123456789abcdef',
+        relevance: 'relevant'
+    }))
+        assert.equal(url.searchParams.get(key), value);
+    assert.equal(url.searchParams.has('page'), false);
+    app.requests[2].resolve({ ok: true, text: async () => app.page() });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(app.mounted, 1);
+    assert.equal(app.disposed, 0);
+});
+
+test('expired authentication during random navigation still displays the login page', async () => {
+    let app = startNavigation();
+    let expired = app.page(true);
+    let query = expired.querySelector;
+    expired.querySelector = selector => (selector === '#gallery-sort' ? null : query(selector));
+    let navigation = app.navigatePage('?sort=random&seed=0123456789abcdef');
+    app.requests[0].resolve({ ok: true, text: async () => expired });
+    await navigation;
+    assert.equal(app.disposed, 1);
+    assert.equal(app.message.hidden, true);
+});
+
+test('favorites filter keeps relevance and random seed while restarting pagination', async () => {
+    let app = startNavigation();
+    let navigation = app.navigatePage('?sort=random&seed=0123456789abcdef&relevance=relevant&page=2&offset=58');
+    app.requests[0].resolve({ ok: true, text: async () => app.page() });
+    await navigation;
+    app.listeners.change({ target: { id: 'gallery-favorites', value: 'none' } });
+    let url = new URL(app.requests[1].url);
+    assert.equal(url.searchParams.get('favorites'), 'none');
+    assert.equal(url.searchParams.get('relevance'), 'relevant');
+    assert.equal(url.searchParams.has('offset'), false);
+    assert.equal(url.searchParams.get('seed'), '0123456789abcdef');
+    assert.equal(url.searchParams.has('page'), false);
+    app.requests[1].resolve({ ok: true, text: async () => app.page() });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(app.mounted, 1);
+});
+
+test('explicit filter navigation waits for rating saves before fetching matching photos', async () => {
+    let app = startNavigation();
+    let finish;
+    app.ratingState.pending = new Promise(resolve => {
+        finish = resolve;
+    });
+    let navigation = app.navigatePage('?relevance=excluded');
+    assert.equal(app.requests.length, 0);
+    app.ratingState.pending = null;
+    app.ratingState.version++;
+    finish();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(app.requests.length, 1);
+    app.requests[0].resolve({ ok: true, text: async () => app.page(false, 'excluded') });
+    await navigation;
+    assert.equal(app.updates.length, 1);
+});
+
+test('filter responses overtaken by a rating are discarded before touching the gallery', async () => {
+    let app = startNavigation();
+    let navigation = app.navigatePage('?favorites=1');
+    app.ratingState.version++;
+    app.requests[0].resolve({ ok: true, text: async () => app.page(false, 'stale') });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(app.updates.length, 0);
+    assert.equal(app.requests.length, 2);
+    app.requests[1].resolve({ ok: true, text: async () => app.page(false, 'current') });
+    await navigation;
+    assert.equal(app.updates.length, 1);
+    assert.equal(app.updates[0].title, 'current');
 });

@@ -1,0 +1,29 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+require $_composer_autoload_path ?? __DIR__ . '/../vendor/autoload.php';
+
+$options = getopt('', ['root:', 'apply', 'help']);
+if (isset($options['help'])) {
+    echo "photobutler-deduplicate [--root=/app] [--apply]\n";
+    echo "Ohne --apply: Inhaltsprüfung (liest Originale), keine Index-/Cachelöschung.\n";
+    exit(0);
+}
+try {
+    $library = new \vielhuber\photobutler\PhotoButler((string) ($options['root'] ?? getcwd()));
+    $roots = json_decode($library->getSetting('PHOTO_PATHS'), true, flags: JSON_THROW_ON_ERROR);
+    $report = $library->duplicates->clean(
+        array_map(fn(string $root): string => rtrim($root, '/'), $roots),
+        isset($options['apply'])
+    );
+    echo json_encode($report, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . "\n";
+    exit($report['conflicts'] !== [] || $report['unreadable'] !== [] ? 2 : 0);
+} catch (\RuntimeException | \PDOException | \JsonException $exception) {
+    fwrite(
+        STDERR,
+        "Duplikatbereinigung nicht vollständig. Jobs, Quellen, Schreibrechte und duplicate_cache_queue prüfen; Sicherungen erhalten.\n"
+    );
+    exit(1);
+}
+

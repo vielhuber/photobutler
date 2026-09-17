@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 require $_composer_autoload_path ?? __DIR__ . '/../vendor/autoload.php';
 
-$options = getopt('', ['root:', 'scan-only', 'tag-only', 'limit:', 'scan-limit:', 'help']);
+$options = getopt('', ['root:', 'scan-only', 'tag-only', 'faces-only', 'previews-only', 'regroup-faces', 'limit:', 'scan-limit:', 'help']);
 if (isset($options['help'])) {
-    echo "photobutler-index [--root=/app] [--scan-only|--tag-only] [--limit=50] [--scan-limit=100]\n";
+    echo "photobutler-index [--root=/app] [--scan-only|--tag-only|--faces-only|--previews-only|--regroup-faces] [--limit=50] [--scan-limit=100]\n";
     exit(0);
 }
-if (isset($options['scan-only'], $options['tag-only'])) {
-    fwrite(STDERR, "--scan-only und --tag-only schließen sich aus.\n");
+if (count(array_intersect(['scan-only', 'tag-only', 'faces-only', 'previews-only', 'regroup-faces'], array_keys($options))) !== 1) {
+    fwrite(STDERR, "Genau einen Job mit --scan-only, --tag-only, --faces-only, --previews-only oder --regroup-faces wählen.\n");
     exit(1);
 }
 foreach (['limit', 'scan-limit'] as $option) {
@@ -21,20 +21,29 @@ foreach (['limit', 'scan-limit'] as $option) {
 }
 try {
     $library = new \vielhuber\photobutler\PhotoButler((string) ($options['root'] ?? getcwd()));
-    if (!isset($options['tag-only'])) {
-        echo "Fotoquellen werden gelesen …\n";
-        $count = $library->index((int) ($options['scan-limit'] ?? PHP_INT_MAX));
-        echo "$count Fotos neu oder aktualisiert.\n";
+    if (isset($options['regroup-faces'])) {
+        $count = $library->faces->regroup();
+        echo "$count doppelte Personengruppen zusammengeführt. Keine Fotos oder KI-Tags neu verarbeitet.\n";
+        exit(0);
     }
-    if (!isset($options['scan-only'])) {
-        echo "KI-Verschlagwortung läuft …\n";
-        $count = $library->tag((int) ($options['limit'] ?? 50));
-        echo "$count Fotos verschlagwortet.\n";
-        $errors = (int) $library->database->query("SELECT COUNT(*) FROM photos WHERE available = 1 AND status = 'error'")->fetchColumn();
-        if ($errors > 0) {
-            fwrite(STDERR, "$errors Fotos warten nach KI-Fehlern auf Wiederholung.\n");
-            exit(1);
-        }
+    $job = match (true) {
+        isset($options['scan-only']) => 'scan',
+        isset($options['faces-only']) => 'faces',
+        isset($options['previews-only']) => 'previews',
+        default => 'tag'
+    };
+    $state = $library->jobs->start($job);
+    $limit = $job === 'scan' ? 1 : (int) ($options['limit'] ?? 50);
+    for ($step = 0; $step < $limit && $state['status'] === 'running'; $step++) {
+        $state = $library->jobs->step($job, $state['token'], (int) ($options['scan-limit'] ?? PHP_INT_MAX), previewLimit: 1);
+        echo $state['percent'] . " % · " . $state['completed'] . "/" . $state['total'] .
+            ($state['estimated'] ? " (geschätzt)" : "") . " · " . $state['errors'] . " Fehler\n";
+    }
+    if ($state['status'] === 'running') {
+        $library->jobs->pause($job);
+    }
+    if ($state['errors'] > 0) {
+        exit(1);
     }
 } catch (\RuntimeException | \JsonException $exception) {
     fwrite(STDERR, "photobutler konnte den Lauf nicht abschließen. Fotoquellen, .data/.env und Schreibrechte prüfen.\n");
