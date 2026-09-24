@@ -15,12 +15,14 @@ final class AuthenticationTest extends TestCase
     protected function setUp(): void
     {
         $this->root = sys_get_temp_dir() . '/photobutler-auth-' . bin2hex(random_bytes(8));
-        foreach (['.data', 'public', 'sessions'] as $directory) {
+        foreach (['.data', 'public', 'sessions', 'photos'] as $directory) {
             mkdir($this->root . '/' . $directory, 0700, true);
         }
         file_put_contents(
             $this->root . '/.data/.env',
-            "AUTH_USERNAME=auth-test\nAUTH_PASSWORD=isolated-test-password\nJWT_SECRET=isolated-auth-test-signing-secret\nPHOTO_PATHS='[]'\n"
+            "AUTH_USERNAME=auth-test\nAUTH_PASSWORD=isolated-test-password\nJWT_SECRET=isolated-auth-test-signing-secret\nPHOTO_PATHS='" .
+                json_encode([$this->root . '/photos'], JSON_THROW_ON_ERROR) .
+                "'\n"
         );
         file_put_contents(
             $this->root . '/public/index.php',
@@ -36,6 +38,10 @@ final class AuthenticationTest extends TestCase
         $this->process = proc_open(
             [
                 PHP_BINARY,
+                '-d',
+                'display_errors=0',
+                '-d',
+                'log_errors=1',
                 '-d',
                 'session.save_path=' . $this->root . '/sessions',
                 '-d',
@@ -123,12 +129,6 @@ final class AuthenticationTest extends TestCase
 
     public function testVideoConditionalRequestsRevalidateWeakEtagsWithoutResendingOriginals(): void
     {
-        mkdir($this->root . '/photos');
-        $config = file_get_contents($this->root . '/.data/.env');
-        file_put_contents(
-            $this->root . '/.data/.env',
-            str_replace("PHOTO_PATHS='[]'", "PHOTO_PATHS='" . json_encode([$this->root . '/photos']) . "'", $config)
-        );
         $source = $this->root . '/photos/video.mp4';
         $original = "\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom";
         file_put_contents($source, $original);
@@ -181,12 +181,6 @@ final class AuthenticationTest extends TestCase
 
     public function testAuthenticatedPreviewBatchCanSaveConcurrentWorkerResults(): void
     {
-        mkdir($this->root . '/photos');
-        $config = file_get_contents($this->root . '/.data/.env');
-        file_put_contents(
-            $this->root . '/.data/.env',
-            str_replace("PHOTO_PATHS='[]'", "PHOTO_PATHS='" . json_encode([$this->root . '/photos']) . "'", $config)
-        );
         $image = imagecreatetruecolor(80, 60);
         imagejpeg($image, $this->root . '/photos/first.jpg');
         imagejpeg($image, $this->root . '/photos/second.jpg');
@@ -211,6 +205,23 @@ final class AuthenticationTest extends TestCase
         [$status, $body] = $this->request('?jobs=1');
         $this->assertSame(200, $status);
         $this->assertSame(100, json_decode($body, true, flags: JSON_THROW_ON_ERROR)['previews']['percent']);
+    }
+
+    public function testEmptyGalleryReportsIdleJobsWithoutStartingWork(): void
+    {
+        $this->login();
+        for ($request = 0; $request < 2; $request++) {
+            [$status, $body] = $this->request('?jobs=1');
+            $this->assertSame(200, $status, file_get_contents($this->root . '/server.log'));
+            $jobs = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame(['scan', 'previews', 'tag', 'faces'], array_keys($jobs));
+            foreach ($jobs as $job) {
+                $this->assertSame('idle', $job['status']);
+                $this->assertSame(0, $job['total']);
+                $this->assertSame(0, $job['completed']);
+                $this->assertSame([], $job['log']);
+            }
+        }
     }
 
     public function testYearCookieSurvivesLostServerSessionAndBrowserSessionCookie(): void
