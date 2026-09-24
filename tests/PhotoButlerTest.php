@@ -415,6 +415,40 @@ final class PhotoButlerTest extends TestCase
         }
     }
 
+    public function testJobsRemainReadableWithoutInventoryWhenSourceIsUnavailable(): void
+    {
+        $this->library->index();
+        $this->library->database->exec(
+            "UPDATE jobs SET status = 'paused', completed = 1, total = 2 WHERE job = 'scan'"
+        );
+        $before = $this->library->database->query('SELECT * FROM jobs')->fetchAll();
+        rename($this->root . '/photos', $this->root . '/temporarily-unavailable');
+        $states = $this->library->jobs->all();
+        $this->assertCount(4, $states);
+        $this->assertSame('paused', $states['scan']['status']);
+        $this->assertSame(1, $states['scan']['completed']);
+        $this->assertSame(2, $states['scan']['total']);
+        $this->assertSame(1, $states['scan']['estimated']);
+        $this->assertSame(
+            'Fotoquelle nicht verfügbar. Gespeicherter Bestand bleibt erhalten.',
+            $states['scan']['warning']
+        );
+        $this->assertSame($before, $this->library->database->query('SELECT * FROM jobs')->fetchAll());
+        $this->assertSame(
+            0,
+            (int) $this->library->database->query('SELECT COUNT(*) FROM import_inventory')->fetchColumn()
+        );
+        try {
+            $this->library->jobs->start('scan');
+            $this->fail('Starting an import must still reject an unavailable source.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame($states['scan']['warning'], $exception->getMessage());
+        }
+        $this->assertSame($before, $this->library->database->query('SELECT * FROM jobs')->fetchAll());
+        rename($this->root . '/temporarily-unavailable', $this->root . '/photos');
+        $this->assertSame('', $this->library->jobs->all()['scan']['warning']);
+    }
+
     public function testScanCheckpointPercentAndStaleRunsCannotRestartWork(): void
     {
         $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Zweiter.jpg');
@@ -1890,6 +1924,22 @@ final class PhotoButlerTest extends TestCase
             [$status, $body] = $request('');
             $this->assertSame(200, $status);
             $this->assertStringContainsString('data-photo="' . $id . '"', $body);
+            rename($this->root . '/photos', $this->root . '/temporarily-unavailable');
+            try {
+                [$status, $jobsBody] = $request('?view=jobs');
+                $this->assertSame(200, $status);
+                $jobsDocument = \Dom\HTMLDocument::createFromString($jobsBody, LIBXML_NOERROR);
+                $this->assertSame(4, $jobsDocument->querySelectorAll('[data-job]')->length);
+                $this->assertStringContainsString(
+                    'Fotoquelle nicht verfügbar.',
+                    $jobsDocument->querySelector('[data-job="scan"] [data-job-message]')->textContent
+                );
+                [$status, $jobsBody] = $request('?jobs=1');
+                $this->assertSame(200, $status);
+                $this->assertCount(4, json_decode($jobsBody, true, flags: JSON_THROW_ON_ERROR));
+            } finally {
+                rename($this->root . '/temporarily-unavailable', $this->root . '/photos');
+            }
             foreach (['newest', 'oldest', 'month_asc', 'month_desc', 'invalid', 'sort[]=oldest'] as $sort) {
                 $query = $sort === 'sort[]=oldest' ? $sort : 'sort=' . $sort;
                 [$sortStatus, $sortBody] = $request('?' . $query);

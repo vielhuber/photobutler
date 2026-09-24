@@ -89,8 +89,14 @@ final class JobRunner
         $statement->execute([$job]);
         $state['log'] = array_reverse($statement->fetchAll());
         $statement->closeCursor();
+        $state['warning'] = '';
         if ($job === 'scan') {
-            $state = array_replace($state, $this->library->importProgress());
+            try {
+                $state = array_replace($state, $this->library->importProgress());
+            } catch (\RuntimeException $exception) {
+                $state['warning'] = $exception->getMessage();
+                $state['estimated'] = 1;
+            }
         }
         if ($job === 'previews' && $state['token'] === '') {
             $state['total'] = (int) $this->library->database

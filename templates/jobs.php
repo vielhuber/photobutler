@@ -35,7 +35,7 @@ declare(strict_types=1) ?>
                     : '' ?>>Pausieren</button>
             </div>
             <button type="button" class="chip" data-job-action="reset">Daten zurücksetzen</button>
-            <p class="muted job-message" data-job-message role="status"></p>
+            <p class="muted job-message" data-job-message role="status"><?= $escape($state['warning']) ?></p>
             <pre class="job-log" data-job-log role="log" aria-label="<?= $escape(
                 $label
             ) ?> Aktivitäten" aria-live="polite" tabindex="0"><?= $escape(

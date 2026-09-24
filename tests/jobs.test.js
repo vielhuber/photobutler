@@ -152,6 +152,20 @@ test('only AI and face errors display the hourly retry notice', async () => {
     app.controller.dispose();
 });
 
+test('source warnings survive polling and clear after recovery without starting jobs', async () => {
+    let app = mount();
+    await settle();
+    app.states.scan.warning = 'Fotoquelle nicht verfügbar. Gespeicherter Bestand bleibt erhalten.';
+    await app.refresh();
+    assert.equal(app.cards.get('scan').querySelector('[data-job-message]').textContent, app.states.scan.warning);
+    assert.equal(app.cards.get('previews').querySelector('[data-job-message]').textContent, '');
+    app.states.scan.warning = '';
+    await app.refresh();
+    assert.equal(app.cards.get('scan').querySelector('[data-job-message]').textContent, '');
+    assert.deepEqual(app.requests, []);
+    app.controller.dispose();
+});
+
 test('mount, persisted pauses and navigation never start jobs', async () => {
     let app = mount();
     await settle();

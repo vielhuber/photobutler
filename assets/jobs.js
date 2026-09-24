@@ -51,6 +51,7 @@ export function initializeJobs($main) {
             $card.querySelector('[data-job-action="reset"]').disabled = resets.has(job);
             $card.querySelector('[data-job-message]').textContent =
                 messages.get(job) ||
+                state.warning ||
                 (state.errors
                     ? 'Fehler prüfen und manuell erneut starten.' +
                       (['tag', 'faces'].includes(job) ? ' Wiederholung frühestens nach einer Stunde.' : '')
