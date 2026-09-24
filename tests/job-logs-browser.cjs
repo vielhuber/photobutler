@@ -31,7 +31,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();`
         );
         php(
-            `$image=imagecreatetruecolor(80,60); for($i=0;$i<4;$i++) imagejpeg($image,$root.'/photos/'.$i.'.jpg'); $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index(); $library->jobs->log('tag','<img src=x onerror=alert(1)>');`
+            `$image=imagecreatetruecolor(80,60); for($i=0;$i<4;$i++) { imagefill($image,0,0,imagecolorallocate($image,$i*40,0,0)); imagejpeg($image,$root.'/photos/'.$i.'.jpg'); } $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index(); $library->jobs->log('tag','<img src=x onerror=alert(1)>');`
         );
         let socket = net.createServer();
         socket.listen(0, '127.0.0.1');

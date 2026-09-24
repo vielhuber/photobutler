@@ -32,7 +32,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             `require ${JSON.stringify(project + '/vendor/autoload.php')};
             $root=${JSON.stringify(root)};
             $image=imagecreatetruecolor(640,480); imagefilledrectangle($image,0,0,639,479,0x338877);
-            for($i=1;$i<=66;$i++) { imagejpeg($image,$root.'/photos/photo-'.sprintf('%02d',$i).'.jpg',85); }
+            for($i=1;$i<=66;$i++) { imagefilledrectangle($image,0,0,15,15,imagecolorallocate($image,$i*3,0,0)); imagejpeg($image,$root.'/photos/photo-'.sprintf('%02d',$i).'.jpg',85); }
             $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index();
             foreach($library->database->query('SELECT id FROM photos')->fetchAll() as $row) { $library->imagePath((int)$row['id']); }
         `
@@ -112,7 +112,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 for (let send of [...held.values()]) send();
             };
             hold = target => target.searchParams.get('size') === 'display' && held.size < 2;
-            await page.goto(url + '?sort=newest', { waitUntil: 'domcontentloaded' });
+            await page.goto(url + '?relevance=all&sort=newest', { waitUntil: 'domcontentloaded' });
             await page.waitForSelector('[data-photo]');
             await page.waitForFunction(() => document.querySelector('[data-photo] img').complete === false);
             let cards = await page.locator('[data-photo]').evaluateAll(cards => cards.map(card => card.dataset.photo));
@@ -162,7 +162,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             await page.mouse.move(0, 0);
             for (let index of [0, 4, 59]) {
                 requests = [];
-                await page.goto(url + `?sort=newest&image=${cards[index]}`);
+                await page.goto(url + `?relevance=all&sort=newest&image=${cards[index]}`);
                 await page.waitForLoadState('networkidle');
                 let expected = cards.slice(Math.max(0, index - 2), index + 3);
                 assert.deepEqual(
@@ -181,7 +181,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 );
             }
             requests = [];
-            await page.goto(url + `?sort=newest&image=${cards[4]}`);
+            await page.goto(url + `?relevance=all&sort=newest&image=${cards[4]}`);
             await page.waitForLoadState('networkidle');
             if (process.env.PHOTOBUTLER_BROWSER_ARTIFACTS)
                 await page.screenshot({
@@ -208,7 +208,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             let pendingNeighbour = page.waitForRequest(request =>
                 request.url().endsWith(`?photo=${cards[19]}&size=original`)
             );
-            await page.goto(url + `?sort=newest&image=${cards[20]}`, { waitUntil: 'domcontentloaded' });
+            await page.goto(url + `?relevance=all&sort=newest&image=${cards[20]}`, { waitUntil: 'domcontentloaded' });
             await pendingNeighbour;
             await page.locator('.viewer-next').click();
             await page.locator('.viewer-next').click();
@@ -237,7 +237,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 'sort and filter stay reload-free'
             );
             requests = [];
-            await page.goto(url + '?sort=newest&page=2');
+            await page.goto(url + '?relevance=all&sort=newest&page=2');
             await page.waitForLoadState('networkidle');
             assert.equal(await page.locator('[data-photo]').count(), 6);
             assert.deepEqual(originalIds(), []);

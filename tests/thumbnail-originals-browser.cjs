@@ -100,7 +100,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         ]) {
             await page.setViewportSize({ width, height });
             for (let row of rows) {
-                await page.goto(url + '?image=' + row.id);
+                await page.goto(url + '?relevance=all&image=' + row.id);
                 await page.waitForFunction(
                     () =>
                         document.querySelector('#viewer-image').naturalWidth > 0 &&
