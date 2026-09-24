@@ -33,8 +33,12 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         );
         fs.copyFileSync(fixtures + '/sample-a.jpg', root + '/photos/a.jpg');
         fs.copyFileSync(fixtures + '/sample-a.jpg', root + '/photos/a-copy.jpg');
+        fs.appendFileSync(root + '/photos/a-copy.jpg', 'distinct photo with identical decoded pixels');
         fs.copyFileSync(fixtures + '/sample-b.jpg', root + '/photos/b.jpg');
         fs.copyFileSync(project + '/tests/fixtures/animated-sticker.webp', root + '/photos/sticker.webp');
+        let originals = Object.fromEntries(
+            fs.readdirSync(root + '/photos').map(name => [name, fs.readFileSync(root + '/photos/' + name)])
+        );
         fs.writeFileSync(
             root + '/.data/.env',
             `PHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\nAUTH_USERNAME=face-test\nAUTH_PASSWORD=isolated-face-test\nJWT_SECRET=isolated-local-face-test-signing-key-123456\n`
@@ -210,7 +214,10 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             return image?.complete && image.naturalWidth === 112;
         });
         let original = await context.request.get(url + `?photo=${photoId}&size=original&download=1`);
-        assert.deepEqual(await original.body(), fs.readFileSync(fixtures + '/sample-a.jpg'));
+        let originalName = database(
+            `echo $library->database->query('SELECT name FROM photos WHERE id = ${Number(photoId)}')->fetchColumn();`
+        );
+        assert.deepEqual(await original.body(), originals[originalName]);
         assert.equal(
             (
                 await context.request.post(url, {
@@ -306,7 +313,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             imagecopy($collage, $first, $width, 0, 0, 0, $width, $height);
             imagecopyresampled($collage, $other, $width * 2, 0, 0, 0, $otherWidth, $height, imagesx($other), imagesy($other));
             imagejpeg($collage, ${JSON.stringify(root + '/photos/album-page.jpg')}, 95);
-            $library->index(); $library->database->exec("UPDATE photos SET status='done'");`);
+            $library->index(); $library->database->exec("UPDATE photos SET status='done', priority=1");`);
         await runFaces();
         await page.getByRole('link', { name: /Personen/ }).click();
         await page.waitForFunction(() => document.querySelectorAll('.person-grid > a').length === 2);

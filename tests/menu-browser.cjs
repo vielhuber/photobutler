@@ -82,7 +82,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             window.menuFrames = [];
             let sample = () => {
                 let $links = [...document.querySelectorAll('nav[aria-label="Bibliothek"] .nav-item')];
-                if ($links.length === 4 && document.styleSheets.length) {
+                if ($links.length === 3 && document.styleSheets.length) {
                     window.menuFrames.push({
                         sidebar: document.querySelector('.sidebar').getBoundingClientRect().width,
                         columns: document.querySelector('#gallery-columns')?.value,
@@ -111,7 +111,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 assert.equal(frame.columns, '7', 'persisted first-frame dropdown');
                 assert.ok(
                     Math.max(...frame.offsets) - Math.min(...frame.offsets) < 0.1,
-                    'all four labels have identical horizontal indentation'
+                    'all three labels have identical horizontal indentation'
                 );
             }
             if (!live) {
@@ -131,12 +131,12 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                         return result;
                     });
                 assert.equal(emoji.width, 24, 'a color emoji must not widen the icon column');
-                assert.equal(emoji.offset, frames[0].offsets[3], 'emoji fallback must not move the Jobs label');
+                assert.equal(emoji.offset, frames[0].offsets[2], 'emoji fallback must not move the Jobs label');
             }
             await page.evaluate(() => {
                 window.menuDocument = true;
             });
-            for (let label of ['Alle Fotos', 'Favoriten', 'Personen', 'Jobs']) {
+            for (let label of ['Alle Fotos', 'Personen', 'Jobs']) {
                 let $link = page.locator('nav[aria-label="Bibliothek"] .nav-item').filter({ hasText: label });
                 let destination = await $link.getAttribute('href');
                 await $link.click();

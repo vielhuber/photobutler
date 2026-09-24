@@ -36,10 +36,10 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         php(`foreach ([[4000,3000],[1920,1280],[640,480]] as $size) {
             $image=imagecreatetruecolor($size[0],$size[1]);
             for($y=0;$y<$size[1];$y+=8) for($x=0;$x<$size[0];$x+=8) imagefilledrectangle($image,$x,$y,$x+7,$y+7,(($x*73856093)^($y*19349663))&0xffffff);
-            for($i=0;$i<6;$i++) imagejpeg($image,$root.'/photos/'.$size[0].'-'.$i.'.jpg',95);
+            for($i=0;$i<6;$i++) { imagefilledrectangle($image,0,0,15,15,imagecolorallocate($image,$i*40,0,0)); imagejpeg($image,$root.'/photos/'.$size[0].'-'.$i.'.jpg',95); }
         }
         $image=imagecreatetruecolor(80,60); imagefilledrectangle($image,0,0,79,59,0x338877);
-        for($i=0;$i<320;$i++) imagejpeg($image,$root.'/photos/small-'.$i.'.jpg',95);
+        for($i=0;$i<320;$i++) { imagejpeg($image,$root.'/photos/small-'.$i.'.jpg',95); file_put_contents($root.'/photos/small-'.$i.'.jpg',(string)$i,FILE_APPEND); }
         $archive=new ZipArchive(); $archive->open($root.'/photos/sticker.webp',ZipArchive::CREATE);
         $archive->addFromString('animation/animation.json',file_get_contents(${JSON.stringify(project + '/tests/fixtures/sticker.json')})); $archive->setMtimeName('animation/animation.json',1234567890); $archive->close();
         copy(${JSON.stringify(project + '/tests/fixtures/animated-sticker.webp')},$root.'/photos/animated.webp');

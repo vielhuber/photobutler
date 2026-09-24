@@ -34,8 +34,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();`
         );
         database(`$image = imagecreatetruecolor(80, 60);
-            for ($i = 0; $i < 4; $i++) { imagejpeg($image, ${JSON.stringify(root + '/photos/')} . $i . '.jpg'); }
-            file_put_contents(${JSON.stringify(root + '/photos/video.mp4')}, 'unsupported');
+            for ($i = 0; $i < 4; $i++) { imagefill($image, 0, 0, imagecolorallocate($image, $i * 40, 0, 0)); imagejpeg($image, ${JSON.stringify(root + '/photos/')} . $i . '.jpg'); }
+            file_put_contents(${JSON.stringify(root + '/photos/unsupported.txt')}, 'unsupported');
             $library->index(limit: 2);
             $library->importProgress(refresh: true);
             $library->jobs->pause('scan');`);
@@ -114,7 +114,9 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         await page.waitForFunction(() => window.firstImport);
         assert.equal((await page.evaluate(() => window.firstImport)).percent, 100);
 
-        fs.copyFileSync(root + '/photos/0.jpg', root + '/photos/new.JPG');
+        database(
+            `$image = imagecreatetruecolor(80, 60); imagefill($image, 0, 0, imagecolorallocate($image, 200, 0, 0)); imagejpeg($image, ${JSON.stringify(root + '/photos/new.JPG')});`
+        );
         await page.evaluate(() => {
             document.querySelector('[data-job="scan"] [data-job-action="start"]').click();
             document.querySelector('[data-job="scan"] [data-job-action="pause"]').click();
@@ -163,7 +165,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         assert.deepEqual(errors, []);
         assert.deepEqual(external, []);
         console.log(
-            'PASS: persistent import counts from real files/SQLite (2/4, 4/4, 4/5, 5/5, deletion 4/4), desktop/mobile first paint and reload, unchanged checkpoint without manual start, explicit resume, MP4 excluded, no other job or external call. URL: ' +
+            'PASS: persistent import counts from real files/SQLite (2/4, 4/4, 4/5, 5/5, deletion 4/4), desktop/mobile first paint and reload, unchanged checkpoint without manual start, explicit resume, unsupported file excluded, no other job or external call. URL: ' +
                 url
         );
     } finally {

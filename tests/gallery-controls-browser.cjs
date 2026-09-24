@@ -46,7 +46,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 imagefilledellipse($image,40,30,30,30,imagecolorallocate($image,240,160,45));
                 $paths=['old/old.jpg','_WHATSAPP/.Statuses/story.jpg','_WHATSAPP/WhatsApp Animated Gifs/Sent/animation.jpg','_WHATSAPP/WhatsApp Images/animation.gif'];
                 for($i=1;$i<=62;$i++) $paths[]='gallery/photo-'.str_pad((string)$i,3,'0',STR_PAD_LEFT).'.jpg';
-                foreach($paths as $path){$target=$root.'/photos/'.$path; if(!is_dir(dirname($target))) mkdir(dirname($target),0700,true); imagejpeg($image,$target);}
+                foreach($paths as $index=>$path){imagefilledrectangle($image,0,0,15,15,imagecolorallocate($image,$index*3,0,0)); $target=$root.'/photos/'.$path; if(!is_dir(dirname($target))) mkdir(dirname($target),0700,true); imagejpeg($image,$target);}
                 $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index();
                 foreach($library->database->query('SELECT id FROM photos')->fetchAll(PDO::FETCH_COLUMN) as $id) $library->imagePath((int)$id);
                 $library->database->exec("UPDATE photos SET priority=CASE WHEN name NOT LIKE 'photo-%' THEN -1 ELSE (name >= 'photo-001' AND name < 'photo-011') END, taken=CASE WHEN album='old' THEN '2022-12-31 23:59:59' ELSE '2024-01-01 00:00:00' END");
@@ -79,7 +79,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             if (request.isNavigationRequest() && request.frame() === page.mainFrame()) documents++;
             if (request.method() === 'POST' && request.postData()?.includes('job-')) writes.push(request.postData());
         });
-        await page.goto(url + (live ? '?album=__photobutler_controls_no_match__' : ''));
+        await page.goto(url + (live ? '?album=__photobutler_controls_no_match__' : '?album=gallery'));
         await page.getByLabel('Benutzername').fill(credentials.username);
         await page.getByLabel('Passwort', { exact: true }).fill(credentials.password);
         await page.getByRole('button', { name: 'Anmelden', exact: true }).click();
@@ -123,6 +123,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             );
         }
         if (!live) {
+            await page.locator('#gallery-relevance').selectOption('all');
+            await page.waitForURL(/relevance=all/);
             let $card = page.locator('.photo-card[data-priority="0"]').first();
             await $card.scrollIntoViewIfNeeded();
             await page.waitForFunction(() => {
@@ -146,8 +148,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         }
         let loadedDocuments = documents;
         await page.locator('#gallery-columns').selectOption('7');
-        await page.locator('#gallery-relevance').selectOption('relevant');
-        await page.waitForURL(/relevance=relevant/);
+        await page.locator('#gallery-relevance').selectOption('all');
+        await page.waitForURL(/relevance=all/);
         await page.locator('#gallery-sort').selectOption('random');
         await page.waitForURL(/seed=[a-f0-9]{16}/);
         assert.equal(documents, loadedDocuments);
@@ -161,9 +163,20 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             assert.ok(
                 (await page.locator('.photo-caption strong').allTextContents()).every(name => name.startsWith('photo-'))
             );
+            await page.evaluate(() => {
+                window.slideshowStarted = null;
+                document.querySelector('#viewer-image').addEventListener(
+                    'load',
+                    () => {
+                        window.slideshowStarted = performance.now();
+                    },
+                    { once: true }
+                );
+            });
             await page.getByRole('button', { name: 'Slideshow', exact: true }).click();
             await page.waitForFunction(
                 () =>
+                    window.slideshowStarted !== null &&
                     document.querySelector('#viewer-image').complete &&
                     document.querySelector('#viewer-image').naturalWidth > 0 &&
                     document.querySelector('#viewer-title').textContent.startsWith('photo-')
@@ -182,7 +195,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 true
             );
             let first = await page.locator('#viewer-title').textContent();
-            let started = Date.now();
+            let started = await page.evaluate(() => window.slideshowStarted);
             await page.waitForFunction(
                 name =>
                     document.querySelector('#viewer-title').textContent !== name &&
@@ -190,7 +203,10 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 first,
                 { timeout: 12000 }
             );
-            assert.ok(Date.now() - started >= 5500, 'image shown for about six real seconds');
+            assert.ok(
+                (await page.evaluate(() => performance.now())) - started >= 5500,
+                'image shown for about six real seconds'
+            );
             await page.getByRole('button', { name: 'Slideshow stoppen' }).click();
             let stopped = await page.locator('#viewer-title').textContent();
             await page.clock.install();
@@ -253,7 +269,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             await page.reload();
             await page.waitForSelector('#gallery-sort');
             assert.equal(await page.locator('#gallery-sort').inputValue(), 'random');
-            assert.equal(await page.locator('#gallery-relevance').inputValue(), 'relevant');
+            assert.equal(await page.locator('#gallery-relevance').inputValue(), 'all');
             assert.equal(new URL(page.url()).searchParams.get('seed'), seed);
             assert.deepEqual(
                 await page
@@ -299,6 +315,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 );
                 assert.equal(await page.locator('#viewer').evaluate($viewer => $viewer.open), false);
                 await page.waitForFunction(id => !document.querySelector(`[data-priority-photo="${id}"]`).disabled, id);
+                await page.locator('#gallery-relevance').selectOption('relevant');
+                await page.waitForURL(/relevance=relevant/);
                 await page.evaluate(() => {
                     window.ratingDom = {
                         $grid: document.querySelector('.photo-grid'),
@@ -357,8 +375,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                         !document.querySelector(`[data-priority-photo="${id}"]`).disabled,
                     id
                 );
-                await page.locator('#gallery-relevance').selectOption('relevant');
-                await page.waitForURL(/relevance=relevant/);
+                await page.locator('#gallery-relevance').selectOption('all');
+                await page.waitForURL(/relevance=all/);
             }
             await page.locator('#gallery-relevance').selectOption('unrated');
             await page.waitForURL(/relevance=unrated/);
@@ -391,8 +409,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                     assert.equal(await page.locator('[data-photo]').count(), 52);
                 }
             }
-            await page.locator('#gallery-relevance').selectOption('relevant');
-            await page.waitForURL(/relevance=relevant/);
+            await page.locator('#gallery-relevance').selectOption('all');
+            await page.waitForURL(/relevance=all/);
             if (process.env.PHOTOBUTLER_BROWSER_ARTIFACTS)
                 await page.screenshot({
                     path:
@@ -405,6 +423,11 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 });
         }
         if (!live) {
+            php(
+                `$library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->database->exec("UPDATE photos SET priority=0 WHERE album='gallery'");`
+            );
+            await page.locator('#gallery-relevance').selectOption('unrated');
+            await page.waitForURL(/relevance=unrated/);
             let $card = page.locator('.photo-card[data-priority="0"]').first();
             let id = await $card.getAttribute('data-photo');
             $card = page.locator(`[data-photo="${id}"]`);
@@ -458,10 +481,14 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                     ),
                 ids
             );
-            await page.locator('#gallery-relevance').selectOption('relevant');
-            await page.waitForURL(/relevance=relevant/);
+            await page.locator('#gallery-relevance').selectOption('all');
+            await page.waitForURL(/relevance=all/);
         }
         if (!live) {
+            php(
+                `$library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->database->exec("UPDATE photos SET priority=1 WHERE name >= 'photo-001' AND name < 'photo-011'");`
+            );
+            await page.reload();
             let id = await page.locator('.photo-card[data-priority="0"]').first().getAttribute('data-photo');
             let acknowledged = ratingResponses;
             await page.locator(`[data-priority-photo="${id}"][data-priority="1"]`).click();
@@ -502,6 +529,11 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 });
             await page.keyboard.press('Escape');
             await page.waitForFunction(() => !document.querySelector('#viewer').open);
+        }
+        if (!live) {
+            let allAlbums = new URL(page.url());
+            allAlbums.searchParams.delete('album');
+            await page.goto(allAlbums.href);
         }
         await page.locator('#gallery-relevance').selectOption('all');
         await page.waitForURL(/relevance=all/);

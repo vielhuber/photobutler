@@ -33,7 +33,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             root + '/public/index.php',
             `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; ob_start(); (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run(); if (($_POST['action'] ?? '') === 'job-step') { usleep(250000); } ob_end_flush();`
         );
-        database(`$image = imagecreatetruecolor(80, 60); imagejpeg($image, ${JSON.stringify(root + '/photos/b.jpg')}); imagejpeg($image, ${JSON.stringify(root + '/photos/c.jpg')}); $library->index(); $library->favorite(1, true); $library->saveTags(1, 'Manuell');
+        database(`$image = imagecreatetruecolor(80, 60); imagejpeg($image, ${JSON.stringify(root + '/photos/b.jpg')}); imagefill($image, 0, 0, imagecolorallocate($image, 100, 0, 0)); imagejpeg($image, ${JSON.stringify(root + '/photos/c.jpg')}); $library->index(); $library->favorite(1, true); $library->saveTags(1, 'Manuell');
             $library->database->exec("UPDATE photos SET ai_tags = '[\\\"KI\\\"]', description = 'KI', status = 'done';
                 INSERT INTO persons (id, name) VALUES (1, 'Manuell'), (2, '');
                 INSERT INTO faces (id, photo_id, person_id, modified, bytes, model, box, embedding, crop, origin) SELECT id, id, id, modified, bytes, 'fixture', '[]', '[]', 'crop', CASE WHEN id = 1 THEN 'manual' ELSE 'auto' END FROM photos;
