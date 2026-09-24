@@ -1158,7 +1158,10 @@ final class PhotoButler
                     static fn(string $value): string => preg_replace('/^W\//', '', trim($value)),
                     explode(',', $_SERVER['HTTP_IF_NONE_MATCH'] ?? '')
                 );
-                if (in_array($etag, $conditions, true) || in_array('*', $conditions, true)) {
+                if (
+                    in_array(preg_replace('/^W\//', '', $etag), $conditions, true) ||
+                    in_array('*', $conditions, true)
+                ) {
                     http_response_code(304);
                     return;
                 }

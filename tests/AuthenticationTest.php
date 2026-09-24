@@ -76,13 +76,19 @@ final class AuthenticationTest extends TestCase
         rmdir($this->root);
     }
 
-    private function request(string $path = '', ?array $post = null): array
-    {
+    private function request(
+        string $path = '',
+        ?array $post = null,
+        array $requestHeaders = [],
+        bool $head = false
+    ): array {
         $headers = [];
         $handle = curl_init('http://' . $this->address . '/' . $path);
         curl_setopt_array($handle, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 5,
+            CURLOPT_HTTPHEADER => $requestHeaders,
+            CURLOPT_NOBODY => $head,
             CURLOPT_COOKIE => http_build_query($this->cookies, '', '; '),
             CURLOPT_HEADERFUNCTION => function ($handle, string $line) use (&$headers): int {
                 $headers[] = trim($line);
@@ -113,6 +119,64 @@ final class AuthenticationTest extends TestCase
         $result = $this->request($path, ['action' => 'login', 'access_token' => $token, 'csrf' => $match[1]]);
         $this->assertSame(200, $result[0]);
         return $result;
+    }
+
+    public function testVideoConditionalRequestsRevalidateWeakEtagsWithoutResendingOriginals(): void
+    {
+        mkdir($this->root . '/photos');
+        $config = file_get_contents($this->root . '/.data/.env');
+        file_put_contents(
+            $this->root . '/.data/.env',
+            str_replace("PHOTO_PATHS='[]'", "PHOTO_PATHS='" . json_encode([$this->root . '/photos']) . "'", $config)
+        );
+        $source = $this->root . '/photos/video.mp4';
+        $original = "\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom";
+        file_put_contents($source, $original);
+        $library = new PhotoButler($this->root);
+        $library->index();
+        $id = $library->photos()[0]->id;
+        $this->login();
+        foreach (['original', 'detail'] as $size) {
+            $url = '?photo=' . $id . '&size=' . $size;
+            [$status, $body, $headers] = $this->request($url);
+            $this->assertSame(200, $status);
+            $this->assertSame($original, $body);
+            $this->assertSame(1, preg_match('/^ETag: (W\/"[a-f0-9]{64}")$/mi', $headers, $match));
+            $etag = $match[1];
+            foreach ([false, true] as $head) {
+                foreach ([$etag, substr($etag, 2), '"outdated", ' . $etag, '*'] as $condition) {
+                    [$status, $body, $headers] = $this->request(
+                        $url,
+                        requestHeaders: ['If-None-Match: ' . $condition],
+                        head: $head
+                    );
+                    $this->assertSame(304, $status);
+                    $this->assertSame('', $body);
+                    $this->assertStringContainsString('ETag: ' . $etag, $headers);
+                    $this->assertStringContainsString('Cache-Control: private, no-cache', $headers);
+                }
+            }
+            $this->assertSame(200, $this->request($url, requestHeaders: ['If-None-Match: "outdated"'])[0]);
+            [$status, $body] = $this->request($url, requestHeaders: ['Range: bytes=0-7']);
+            $this->assertSame(206, $status);
+            $this->assertSame(substr($original, 0, 8), $body);
+            [$status, $body, $headers] = $this->request(
+                $url . '&download=1',
+                requestHeaders: ['If-None-Match: ' . $etag]
+            );
+            $this->assertSame(200, $status);
+            $this->assertSame($original, $body);
+            $this->assertStringContainsString('Cache-Control: no-store', $headers);
+        }
+        touch($source, filemtime($source) + 2);
+        [$status, $body, $headers] = $this->request($url, requestHeaders: ['If-None-Match: ' . $etag]);
+        $this->assertSame(200, $status);
+        $this->assertSame($original, $body);
+        $this->assertStringNotContainsString('ETag: ' . $etag, $headers);
+        $this->assertSame($original, file_get_contents($source));
+        $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
+        $this->cookies = [];
+        $this->assertSame(401, $this->request($url, requestHeaders: ['If-None-Match: *'])[0]);
     }
 
     public function testAuthenticatedPreviewBatchCanSaveConcurrentWorkerResults(): void
