@@ -253,8 +253,15 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame('pending', $this->library->photo(1)->status);
         $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM face_state')->fetchColumn());
         $previews = $jobs->start('previews');
-        $jobs->pause('tag');
-        $this->assertSame('running', $jobs->all()['previews']['status']);
+        $lock = fopen($this->root . '/.data/cli-previews.lock', 'c');
+        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        try {
+            $jobs->pause('tag');
+            $this->assertSame('running', $jobs->all()['previews']['status']);
+        } finally {
+            fclose($lock);
+        }
+        $this->assertSame('paused', $jobs->all()['previews']['status']);
         $previews = $jobs->step('previews', $previews['token']);
         $this->assertSame(100, $previews['percent']);
         $this->assertSame('done', $previews['status']);
@@ -263,6 +270,32 @@ final class PhotoButlerTest extends TestCase
         $reopened = new PhotoButler($this->root);
         $this->assertSame('done', $reopened->jobs->all()['previews']['status']);
         $this->assertSame('paused', $reopened->jobs->all()['tag']['status']);
+    }
+
+    public function testJobStatusRequiresAnActiveCliLockWithoutChangingPersistedCheckpoints(): void
+    {
+        $this->library->index();
+        $this->library->database->exec("UPDATE jobs SET status = 'running', token = 'private-run', completed = 1");
+        $before = $this->library->database->query('SELECT * FROM jobs')->fetchAll();
+        foreach (['scan', 'previews', 'tag', 'faces'] as $job) {
+            $this->assertSame('paused', $this->library->jobs->all()[$job]['status']);
+            $lock = fopen($this->root . '/.data/cli-' . $job . '.lock', 'c');
+            $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+            try {
+                $states = new PhotoButler($this->root)->jobs->all();
+                $this->assertSame('running', $states[$job]['status']);
+                foreach ($states as $name => $state) {
+                    $this->assertArrayNotHasKey('token', $state);
+                    if ($name !== $job) {
+                        $this->assertSame('paused', $state['status']);
+                    }
+                }
+            } finally {
+                fclose($lock);
+            }
+            $this->assertSame('paused', new PhotoButler($this->root)->jobs->all()[$job]['status']);
+        }
+        $this->assertSame($before, $this->library->database->query('SELECT * FROM jobs')->fetchAll());
     }
 
     public function testThumbnailFailuresCanRetryImmediatelyDespiteRecentTagErrors(): void
@@ -466,8 +499,15 @@ final class PhotoButlerTest extends TestCase
         $newRun = $reopened->jobs->start('scan');
         $this->assertNotSame($oldToken, $newRun['token']);
         $this->assertSame('paused', $jobs->step('scan', $oldToken)['status']);
-        $jobs->pause('scan', $oldToken);
-        $this->assertSame('running', $reopened->jobs->all()['scan']['status']);
+        $lock = fopen($this->root . '/.data/cli-scan.lock', 'c');
+        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        try {
+            $jobs->pause('scan', $oldToken);
+            $this->assertSame('running', $reopened->jobs->all()['scan']['status']);
+        } finally {
+            fclose($lock);
+        }
+        $this->assertSame('paused', $reopened->jobs->all()['scan']['status']);
         $completed = $reopened->jobs->step('scan', $newRun['token']);
         $this->assertSame(2, $completed['completed']);
         $this->assertSame(100, $completed['percent']);
@@ -734,6 +774,20 @@ final class PhotoButlerTest extends TestCase
         };
         $this->assertSame(1, $run([])[0]);
         $this->assertSame(1, $run(['--scan-only', '--tag-only'])[0]);
+        foreach (['--limit=0', '--limit=-1', '--limit=invalid', '--scan-limit=0'] as $limit) {
+            $this->assertSame(1, $run(['--scan-only', $limit])[0]);
+        }
+        foreach (['scan', 'previews', 'tag', 'faces'] as $job) {
+            $lock = fopen($this->root . '/.data/cli-' . $job . '.lock', 'c');
+            $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+            $before = $this->library->database->query('SELECT * FROM jobs')->fetchAll();
+            try {
+                $this->assertSame(1, $run(['--' . $job . '-only'])[0]);
+                $this->assertSame($before, $this->library->database->query('SELECT * FROM jobs')->fetchAll());
+            } finally {
+                fclose($lock);
+            }
+        }
         $this->assertCount(0, $this->library->photos());
         $this->assertSame(0, $run(['--scan-only', '--scan-limit=1'])[0]);
         $this->assertSame('paused', $this->library->jobs->all()['scan']['status']);
@@ -1957,22 +2011,20 @@ final class PhotoButlerTest extends TestCase
             }
             $this->assertSame(410, $request('', ['action' => 'tag', 'csrf' => $csrf])[0]);
             $this->assertSame(410, $request('', ['action' => 'scan', 'csrf' => $csrf])[0]);
+            $before = $this->library->database->query('SELECT * FROM jobs')->fetchAll();
             foreach (['tag', 'faces', 'scan', 'previews'] as $job) {
-                $this->assertSame(403, $request('', ['action' => 'job-start', 'job' => $job, 'csrf' => 'wrong'])[0]);
-                [$status, $body] = $request('', ['action' => 'job-start', 'job' => $job, 'csrf' => $csrf]);
-                $this->assertSame(200, $status);
-                $state = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
-                $this->assertSame('running', $state['status']);
-                [$status, $body] = $request('', [
-                    'action' => 'job-step',
-                    'job' => $job,
-                    'token' => $state['token'],
-                    'csrf' => $csrf
-                ]);
-                $this->assertSame(200, $status);
-                $state = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
-                $this->assertSame(in_array($job, ['tag', 'faces'], true) ? 'error' : 'done', $state['status']);
+                foreach (['job-start', 'job-step', 'job-pause'] as $action) {
+                    $this->assertSame(403, $request('', ['action' => $action, 'job' => $job, 'csrf' => 'wrong'])[0]);
+                    [$status, $body, $headers] = $request('', ['action' => $action, 'job' => $job, 'csrf' => $csrf]);
+                    $this->assertSame(410, $status);
+                    $this->assertStringContainsString('application/json', $headers['content-type']);
+                    $this->assertStringContainsString(
+                        'PHP-Konsolenbefehl',
+                        json_decode($body, true, flags: JSON_THROW_ON_ERROR)['error']
+                    );
+                }
             }
+            $this->assertSame($before, $this->library->database->query('SELECT * FROM jobs')->fetchAll());
             [$status, $body] = $request('?view=jobs');
             $this->assertSame(200, $status);
             $document = \Dom\HTMLDocument::createFromString($body, LIBXML_NOERROR);
@@ -1985,7 +2037,19 @@ final class PhotoButlerTest extends TestCase
                 )
             );
             $this->assertSame(0, $document->querySelectorAll('.sidebar [data-job]')->length);
-            $this->assertSame(422, $request('', ['action' => 'job-start', 'job' => 'unknown', 'csrf' => $csrf])[0]);
+            $this->assertSame(410, $request('', ['action' => 'job-start', 'job' => 'unknown', 'csrf' => $csrf])[0]);
+            $this->assertSame(
+                0,
+                $document->querySelectorAll('[data-job-action="start"], [data-job-action="pause"], [data-job-log]')
+                    ->length
+            );
+            $this->assertSame(4, $document->querySelectorAll('[data-job-action="reset"]')->length);
+            foreach (['scan', 'previews', 'tag', 'faces'] as $job) {
+                $command = $document->querySelector('[data-job="' . $job . '"] .job-command code')->textContent;
+                $this->assertStringStartsWith('php ', $command);
+                $this->assertStringContainsString('--root=' . escapeshellarg($this->root), $command);
+                $this->assertStringEndsWith('--' . $job . '-only', $command);
+            }
             $this->assertSame(200, $request('?photo=' . $id . '&size=thumb')[0]);
             $etags = [];
             foreach (['thumb', 'display', 'detail', 'original'] as $size) {

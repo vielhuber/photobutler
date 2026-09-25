@@ -179,7 +179,7 @@ final class AuthenticationTest extends TestCase
         $this->assertSame(401, $this->request($url, requestHeaders: ['If-None-Match: *'])[0]);
     }
 
-    public function testAuthenticatedPreviewBatchCanSaveConcurrentWorkerResults(): void
+    public function testCliPreviewBatchSavesConcurrentResultsVisibleToAuthenticatedBrowser(): void
     {
         $image = imagecreatetruecolor(80, 60);
         imagejpeg($image, $this->root . '/photos/first.jpg');
@@ -189,14 +189,16 @@ final class AuthenticationTest extends TestCase
         $library->index();
         $this->login();
         [, $body] = $this->request('?view=jobs');
-        preg_match('/name="csrf-token" content="([^"]+)"/', $body, $match);
-        $parameters = ['job' => 'previews', 'csrf' => $match[1]];
-        [$status, $body] = $this->request('', ['action' => 'job-start'] + $parameters);
-        $this->assertSame(200, $status);
-        $state = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
-        [$status, $body] = $this->request('', ['action' => 'job-step', 'token' => $state['token']] + $parameters);
-        $this->assertSame(200, $status, $body);
-        $state = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        $document = \Dom\HTMLDocument::createFromString($body, LIBXML_NOERROR);
+        $command = $document->querySelector('[data-job="previews"] .job-command code')->textContent;
+        $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $output = stream_get_contents($pipes[1]);
+        $errors = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $this->assertSame(0, proc_close($process), $errors);
+        $this->assertStringContainsString('100 %', $output);
+        $state = $library->jobs->all()['previews'];
         $this->assertSame('done', $state['status']);
         $this->assertSame(2, $state['completed']);
         $this->assertSame(0, $state['errors']);
@@ -261,8 +263,23 @@ final class AuthenticationTest extends TestCase
             'job' => 'scan',
             'csrf' => $match[1]
         ]);
-        $this->assertSame(503, $status);
+        $this->assertSame(410, $status);
         $this->assertArrayHasKey('error', json_decode($body, true, flags: JSON_THROW_ON_ERROR));
+        $process = proc_open(
+            [PHP_BINARY, dirname(__DIR__) . '/bin/photobutler-index', '--root=' . $this->root, '--scan-only'],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            env_vars: array_merge(getenv(), ['PATH' => $this->root . '/missing-bin'])
+        );
+        $output = stream_get_contents($pipes[1]);
+        $errors = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $this->assertSame(1, proc_close($process));
+        $this->assertSame('', $output);
+        $this->assertStringContainsString('konnte den Lauf nicht abschließen', $errors);
+        $this->assertStringNotContainsString('Warning:', $errors);
+        $this->assertStringNotContainsString('<br', $errors);
         $this->assertSame(
             0,
             (int) $this->library->database->query('SELECT COUNT(*) FROM import_inventory')->fetchColumn()

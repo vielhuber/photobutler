@@ -3,7 +3,7 @@ let os = require('node:os');
 let path = require('node:path');
 let net = require('node:net');
 let { once } = require('node:events');
-let { spawn, execFileSync } = require('node:child_process');
+let { spawn, spawnSync, execFileSync } = require('node:child_process');
 let assert = require('node:assert/strict');
 let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
@@ -21,6 +21,15 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             ],
             { encoding: 'utf8' }
         );
+    let run = (job, expectedCode = 0, ...limits) => {
+        let result = spawnSync(
+            'php',
+            [project + '/bin/photobutler-index', '--root=' + root, '--' + job + '-only', ...limits],
+            { encoding: 'utf8', timeout: 60000 }
+        );
+        assert.equal(result.status, expectedCode, result.stderr);
+        return result.stdout;
+    };
     try {
         fs.mkdirSync(root + '/.data');
         fs.mkdirSync(root + '/public');
@@ -74,19 +83,18 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         assert.equal(actions.length, 0);
         assert.equal(await page.locator('[data-job]').count(), 4);
         let count = documents;
-        for (let job of ['tag', 'faces', 'scan', 'previews']) {
-            await page.evaluate(job => {
-                document.querySelector(`[data-job="${job}"] [data-job-action="start"]`).click();
-                document.querySelector(`[data-job="${job}"] [data-job-action="pause"]`).click();
-            }, job);
-            await page.waitForFunction(
-                job => !document.querySelector(`[data-job="${job}"] [data-job-action="start"]`).disabled,
-                job
-            );
-            assert.match(await page.locator(`[data-job="${job}"] [data-job-status]`).textContent(), /Pausiert/);
-        }
+        assert.equal(
+            await page.locator('[data-job-action="start"], [data-job-action="pause"], [data-job-log]').count(),
+            0
+        );
+        assert.equal(await page.locator('.job-command code').count(), 4);
         assert.equal(Number(database('echo count($library->photos());')), 0);
-        await page.locator('[data-job="scan"] [data-job-action="start"]').click();
+        run('scan', 0, '--scan-limit=1');
+        await page.waitForFunction(() =>
+            document.querySelector('[data-job="scan"] [data-job-status]').textContent.includes('Pausiert')
+        );
+        assert.equal(Number(database('echo count($library->photos());')), 1);
+        run('scan');
         await page.waitForFunction(
             () => document.querySelector('[data-job="scan"] [data-job-status]').textContent === '100 % · Abgeschlossen'
         );
@@ -103,7 +111,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         let original = fs.readFileSync(root + '/photos/0.jpg');
         let originalStat = fs.statSync(root + '/photos/0.jpg');
         fs.writeFileSync(root + '/photos/0.jpg', '');
-        await page.locator('[data-job="previews"] [data-job-action="start"]').click();
+        run('previews', 1);
         await page.waitForFunction(() =>
             document
                 .querySelector('[data-job="previews"] [data-job-status]')
@@ -122,7 +130,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 await page.locator('[data-job="previews"] [data-job-message]').textContent(),
                 'Fehler prüfen und manuell erneut starten.'
             );
-            assert.equal(await page.locator('[data-job="previews"] [data-job-action="start"]').isEnabled(), true);
+            assert.equal(await page.locator('[data-job="previews"] .job-command code').isVisible(), true);
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
             assert.equal(actions.length, actionsBeforeReload);
             if (process.env.PHOTOBUTLER_BROWSER_ARTIFACTS)
@@ -134,17 +142,16 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         fs.writeFileSync(root + '/photos/0.jpg', original);
         fs.utimesSync(root + '/photos/0.jpg', originalStat.atime, originalStat.mtime);
         await page.setViewportSize({ width: 1440, height: 1000 });
-        await page.locator('[data-job="previews"] [data-job-action="start"]').click();
+        run('previews');
         await page.waitForFunction(() =>
             document.querySelector('[data-job="previews"] [data-job-status]').textContent.includes('Abgeschlossen')
         );
         assert.equal(await page.locator('[data-job="previews"] [data-job-message]').textContent(), '');
         for (let job of ['tag', 'faces'])
-            assert.equal(JSON.parse(database('echo json_encode($library->jobs->all());'))[job].status, 'paused');
+            assert.equal(JSON.parse(database('echo json_encode($library->jobs->all());'))[job].status, 'idle');
 
-        await page.locator('[data-job="faces"] [data-job-action="start"]').click();
-        await page.waitForResponse(response => response.request().postData()?.includes('job-step'));
-        await page.locator('[data-job="previews"] [data-job-action="start"]').click();
+        run('faces', 0, '--limit=1');
+        run('previews');
         await page.getByRole('link', { name: /Alle Fotos/ }).click();
         await page.locator('#gallery-relevance').selectOption('all');
         await page.waitForSelector('.photo-card');
@@ -155,29 +162,21 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         await page.waitForFunction(() => new URL(location.href).searchParams.get('sort') === 'oldest');
         await page.getByRole('link', { name: 'Jobs', exact: true }).click();
         await page.waitForSelector('[data-job="faces"]');
-        if (await page.locator('[data-job="faces"] [data-job-action="pause"]').isEnabled()) {
-            await page.locator('[data-job="faces"] [data-job-action="pause"]').click();
-            await page.waitForFunction(
-                () => !document.querySelector('[data-job="faces"] [data-job-action="start"]').disabled
-            );
-        }
         let progress = JSON.parse(database('echo json_encode($library->jobs->all());'));
-        assert.equal(progress.tag.status, 'paused');
-        assert.ok(['running', 'done'].includes(progress.previews.status));
+        assert.equal(progress.tag.status, 'idle');
+        assert.equal(progress.previews.status, 'done');
+        assert.equal(progress.faces.status, 'paused');
         let faceCount = progress.faces.completed;
         assert.ok(faceCount > 0);
         await page.reload();
         await page.waitForSelector('[data-job="faces"]');
         assert.equal(JSON.parse(database('echo json_encode($library->jobs->all());')).faces.completed, faceCount);
-        await page.locator('[data-job="faces"] [data-job-action="start"]').click();
+        run('faces');
         await page.waitForFunction(
             () => document.querySelector('[data-job="faces"] [data-job-status]').textContent === '100 % · Abgeschlossen'
         );
 
-        await page.waitForFunction(
-            () => !document.querySelector('[data-job="previews"] [data-job-action="start"]').disabled
-        );
-        await page.locator('[data-job="previews"] [data-job-action="start"]').click();
+        run('previews');
         await page.waitForFunction(
             () =>
                 document.querySelector('[data-job="previews"] [data-job-status]').textContent ===
@@ -194,14 +193,14 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         ).trim();
         assert.deepEqual(await (await context.request.get(url + `?photo=${id}&size=original&download=1`)).body(), hash);
 
-        await page.locator('[data-job="tag"] [data-job-action="start"]').click();
+        run('tag', 1);
         await page.waitForFunction(() =>
             document.querySelector('[data-job="tag"] [data-job-status]').textContent.includes('Mit Fehlern beendet')
         );
         assert.match(await page.locator('[data-job="tag"] [data-job-status]').textContent(), /0 %/);
         assert.match(await page.locator('[data-job="tag"] [data-job-message]').textContent(), /nach einer Stunde/);
         assert.equal(JSON.parse(database('echo json_encode($library->jobs->all());')).faces.completed, 12);
-        await page.locator('[data-job="tag"] [data-job-action="start"]').click();
+        run('tag', 1);
         await page.waitForFunction(() =>
             document.querySelector('[data-job="tag"] [data-job-status]').textContent.includes('Mit Fehlern beendet')
         );
@@ -222,7 +221,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             });
         await page.setViewportSize({ width: 390, height: 844 });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-        assert.equal(await page.locator('[data-job-action="start"]:visible').count(), 4);
+        assert.equal(await page.locator('.job-command code:visible').count(), 4);
+        assert.equal(actions.length, 0);
         if (process.env.PHOTOBUTLER_BROWSER_ARTIFACTS)
             await page.screenshot({
                 path: process.env.PHOTOBUTLER_BROWSER_ARTIFACTS + '/jobs-mobile.png',
@@ -241,7 +241,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         assert.deepEqual(errors, []);
         assert.deepEqual(external, []);
         console.log(
-            'PASS: four manual independent starts/pauses, scan without chained processing, real CPU face steps, navigation/sort/columns while running, persisted pause/reload/resume, cached previews, original bytes, explicit AI configuration errors without external requests, percentages, desktop/mobile. URL: ' +
+            'PASS: independent CLI jobs and bounded pauses, scan without chained processing, real CPU face steps, reload-free navigation/sort/columns, persisted pause/reload/resume, cached previews, original bytes, explicit AI configuration errors without external requests, percentages, desktop/mobile. URL: ' +
                 url
         );
     } finally {

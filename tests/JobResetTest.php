@@ -193,10 +193,10 @@ final class JobResetTest extends TestCase
     {
         foreach (
             [
-                'scan' => ['job-faces', 'index', 'thumbnail-0'],
-                'tag' => ['job-tag', 'tag'],
-                'faces' => ['job-faces', 'faces'],
-                'previews' => ['job-previews', 'thumbnail-1']
+                'scan' => ['cli-scan', 'cli-previews', 'cli-tag', 'cli-faces', 'job-faces', 'index', 'thumbnail-0'],
+                'tag' => ['cli-tag', 'job-tag', 'tag'],
+                'faces' => ['cli-faces', 'job-faces', 'faces'],
+                'previews' => ['cli-previews', 'job-previews', 'thumbnail-1']
             ]
             as $job => $names
         ) {

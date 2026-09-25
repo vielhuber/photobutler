@@ -3,9 +3,11 @@ let assert = require('node:assert/strict');
 let { readFileSync } = require('node:fs');
 let { runInNewContext } = require('node:vm');
 
-function mount({ confirm = false, deferRefresh = false } = {}) {
+function mount({ confirm = false, deferRefresh = false, deferReset = false, resetError = null } = {}) {
     let requests = [];
-    let pending = [];
+    let finishReset;
+    let polls = [];
+    let timers = new Set();
     let listener;
     let finishRefresh;
     let refresh;
@@ -30,6 +32,17 @@ function mount({ confirm = false, deferRefresh = false } = {}) {
         cards.set(job, {
             dataset: { job, state: JSON.stringify(state) },
             querySelector(selector) {
+                assert.ok(
+                    [
+                        '[data-job-status]',
+                        'progress',
+                        '[data-job-eta]',
+                        '[data-job-count]',
+                        '[data-job-action="reset"]',
+                        '[data-job-message]'
+                    ].includes(selector),
+                    selector
+                );
                 if (!elements.has(selector)) elements.set(selector, {});
                 return elements.get(selector);
             }
@@ -52,13 +65,17 @@ function mount({ confirm = false, deferRefresh = false } = {}) {
             Map,
             JSON,
             Promise,
-            setTimeout: callback => {
+            setTimeout: (callback, delay) => {
+                assert.equal(delay, 3000);
                 refresh = callback;
-                return 1;
+                timers.add(callback);
+                return callback;
             },
-            clearTimeout() {},
+            clearTimeout: timer => timers.delete(timer),
             fetch: async (url, options) => {
                 if (!options) {
+                    polls.push(url);
+                    assert.equal(url, '?jobs=1');
                     let snapshot = JSON.parse(JSON.stringify(states));
                     if (deferRefresh)
                         await new Promise(resolve => {
@@ -69,24 +86,32 @@ function mount({ confirm = false, deferRefresh = false } = {}) {
                 let action = options.body.get('action');
                 let job = options.body.get('job');
                 requests.push({ action, job });
-                let result = states[job];
-                if (action === 'job-start')
-                    result = states[job] = { ...result, status: 'running', token: job + '-token' };
-                if (action === 'job-pause') result = states[job] = { ...result, status: 'paused' };
-                if (action === 'job-reset')
-                    result = states[job] = { ...result, status: 'idle', token: '', completed: 0, percent: 0 };
-                if (action === 'job-step') result = await new Promise(resolve => pending.push({ job, resolve }));
-                return { ok: true, headers: { get: () => 'application/json' }, json: async () => result };
+                assert.equal(options.method, 'POST');
+                assert.equal(options.body.get('csrf'), 'csrf');
+                assert.equal(action, 'job-reset');
+                if (deferReset)
+                    await new Promise(resolve => {
+                        finishReset = resolve;
+                    });
+                let result = resetError
+                    ? { error: resetError }
+                    : (states[job] = { ...states[job], status: 'idle', token: '', completed: 0, percent: 0 });
+                return { ok: !resetError, headers: { get: () => 'application/json' }, json: async () => result };
             }
         }
     );
     return {
         requests,
-        pending,
+        polls,
+        timers,
+        finishReset() {
+            finishReset();
+        },
         cards,
         states,
         controller,
         refresh() {
+            timers.delete(refresh);
             return refresh();
         },
         finishRefresh() {
@@ -102,18 +127,6 @@ function mount({ confirm = false, deferRefresh = false } = {}) {
         click(job, action) {
             let $button = { dataset: { jobAction: action }, closest: () => cards.get(job) };
             return listener({ target: { closest: selector => (selector === '[data-job-action]' ? $button : null) } });
-        },
-        complete(job, more = false) {
-            let index = pending.findIndex(item => item.job === job);
-            assert.notEqual(index, -1);
-            let [{ resolve }] = pending.splice(index, 1);
-            states[job] = {
-                ...states[job],
-                status: states[job].status === 'paused' ? 'paused' : more ? 'running' : 'done',
-                completed: 4,
-                percent: 100
-            };
-            resolve(states[job]);
         }
     };
 }
@@ -138,7 +151,7 @@ test('only AI and face errors display the hourly retry notice', async () => {
                 'Fehler prüfen und manuell erneut starten.' +
                     (['tag', 'faces'].includes(job) ? ' Wiederholung frühestens nach einer Stunde.' : '')
             );
-            assert.equal(app.cards.get(job).querySelector('[data-job-action="start"]').disabled, false);
+            assert.equal(app.cards.get(job).querySelector('[data-job-action="reset"]').disabled, false);
         }
     }
     assert.deepEqual(app.requests, []);
@@ -177,65 +190,53 @@ test('mount, persisted pauses and navigation never start jobs', async () => {
     app.controller.dispose();
 });
 
-test('all four jobs run independently, pause at the step boundary and resume only manually', async () => {
+test('polling shows independent CLI progress, pause and completion without processing', async () => {
     let app = mount();
-    for (let job of Object.keys(app.states)) app.click(job, 'start');
     await settle();
-    assert.equal(app.pending.length, 4);
-    await app.click('faces', 'pause');
-    app.complete('faces', true);
+    for (let [status, label, percent] of [
+        ['running', 'Läuft', 50],
+        ['paused', 'Pausiert', 50],
+        ['done', 'Abgeschlossen', 100]
+    ]) {
+        for (let job of Object.keys(app.states)) {
+            app.states[job] = { ...app.states[job], status, percent, completed: percent / 25, eta: 'ca. 1 Min.' };
+            await app.refresh();
+            let $card = app.cards.get(job);
+            assert.equal($card.querySelector('[data-job-status]').textContent, `${percent} % · ${label}`);
+            assert.equal($card.querySelector('progress').value, percent);
+            assert.equal($card.querySelector('[data-job-eta]').textContent, 'ca. 1 Min.');
+            assert.match($card.querySelector('[data-job-count]').textContent, new RegExp(`^${percent / 25} / 4`));
+        }
+    }
+    assert.deepEqual(app.requests, []);
+    app.controller.dispose();
+});
+
+test('completing a CLI import never starts tagging, face analysis or preview generation', async () => {
+    let app = mount();
     await settle();
-    assert.equal(
-        app.pending.some(item => item.job === 'faces'),
-        false
-    );
-    assert.equal(app.pending.length, 3);
-    app.navigate(false);
-    app.complete('tag', true);
-    await settle();
-    assert.equal(
-        app.pending.some(item => item.job === 'tag'),
-        true
-    );
-    app.navigate(true);
-    assert.match(app.cards.get('faces').querySelector('[data-job-status]').textContent, /Pausiert/);
-    app.click('faces', 'start');
-    await settle();
-    assert.equal(app.pending.length, 4);
-    for (let job of Object.keys(app.states)) app.complete(job);
+    app.states.scan = { ...app.states.scan, status: 'done', percent: 100, completed: 4 };
+    await app.refresh();
+    assert.equal(app.cards.get('scan').querySelector('[data-job-status]').textContent, '100 % · Abgeschlossen');
+    for (let job of ['tag', 'faces', 'previews'])
+        assert.equal(app.cards.get(job).querySelector('[data-job-status]').textContent, '25 % · Pausiert');
+    assert.deepEqual(app.requests, []);
+    app.controller.dispose();
+});
+
+test('removed browser start and pause actions cannot submit processing requests', async () => {
+    let app = mount();
     await settle();
     for (let job of Object.keys(app.states)) {
-        assert.match(app.cards.get(job).querySelector('[data-job-status]').textContent, /100 % · Abgeschlossen/);
-        assert.equal(app.cards.get(job).querySelector('[data-job-action="start"]').disabled, false);
+        await app.click(job, 'start');
+        await app.click(job, 'pause');
     }
+    assert.deepEqual(app.requests, []);
     app.controller.dispose();
-});
-
-test('completing an import never starts tagging, face analysis or preview generation', async () => {
-    let app = mount();
-    app.click('scan', 'start');
-    await settle();
-    app.complete('scan');
-    await settle();
-    assert.deepEqual(
-        app.requests.map(item => item.job),
-        ['scan', 'scan']
-    );
-    app.controller.dispose();
-});
-
-test('double starts are ignored and disposal never schedules a new processing step', async () => {
-    let app = mount();
-    app.click('tag', 'start');
-    app.click('tag', 'start');
-    await settle();
-    app.controller.dispose();
-    app.complete('tag', true);
-    await settle();
-    assert.deepEqual(
-        app.requests.map(item => item.action),
-        ['job-start', 'job-step', 'job-pause']
-    );
+    assert.equal(app.timers.size, 0);
+    let count = app.polls.length;
+    await app.refresh();
+    assert.equal(app.polls.length, count);
 });
 
 test('the removed combined reset is neither offered nor handled', async () => {
@@ -247,17 +248,14 @@ test('the removed combined reset is neither offered nor handled', async () => {
     app.controller.dispose();
 });
 
-test('a stale run cannot send a global pause after another browser replaced its token', async () => {
-    let app = mount();
-    app.click('tag', 'start');
-    await settle();
+test('disposing during a pending status request never pauses a CLI run or resumes polling', async () => {
+    let app = mount({ deferRefresh: true });
     app.controller.dispose();
-    app.pending.shift().resolve({ ...app.states.tag, status: 'paused', token: undefined });
+    app.finishRefresh();
     await settle();
-    assert.deepEqual(
-        app.requests.map(item => item.action),
-        ['job-start', 'job-step']
-    );
+    assert.equal(app.timers.size, 0);
+    assert.equal(app.polls.length, 1);
+    assert.deepEqual(app.requests, []);
 });
 
 test('all four cards display persisted estimates without a countdown or automatic processing', async () => {
@@ -298,29 +296,24 @@ test('each reset requires confirmation and changes only its own job without a re
     app.controller.dispose();
 });
 
-test('reset waits for its in-flight step, blocks double clicks and leaves other runs alone', async () => {
-    let app = mount({ confirm: true });
-    app.click('tag', 'start');
-    app.click('faces', 'start');
+test('pending resets block double clicks and stale polling without changing other CLI runs', async () => {
+    let app = mount({ confirm: true, deferReset: true });
     await settle();
+    app.states.faces.status = 'running';
     let reset = app.click('tag', 'reset');
     await app.click('tag', 'reset');
-    await app.click('tag', 'start');
-    assert.equal(
-        app.requests.some(item => item.action === 'job-reset'),
-        false
-    );
-    app.complete('tag', true);
+    assert.equal(app.cards.get('tag').querySelector('[data-job-action="reset"]').disabled, true);
+    app.states.tag.completed = 3;
+    app.states.tag.percent = 75;
+    await app.refresh();
+    assert.equal(app.cards.get('tag').querySelector('progress').value, 25);
+    assert.equal(app.cards.get('faces').querySelector('[data-job-status]').textContent, '25 % · Läuft');
+    app.finishReset();
     await reset;
-    assert.deepEqual(
-        app.requests.filter(item => item.job === 'tag').map(item => item.action),
-        ['job-start', 'job-step', 'job-pause', 'job-reset']
-    );
-    assert.equal(app.pending.length, 1);
-    assert.equal(app.pending[0].job, 'faces');
-    assert.match(app.cards.get('tag').querySelector('[data-job-status]').textContent, /0 % · Bereit/);
-    app.complete('faces');
-    await settle();
+    assert.deepEqual(app.requests, [{ action: 'job-reset', job: 'tag' }]);
+    assert.equal(app.cards.get('tag').querySelector('[data-job-status]').textContent, '0 % · Bereit');
+    assert.equal(app.cards.get('tag').querySelector('[data-job-action="reset"]').disabled, false);
+    assert.equal(app.states.faces.status, 'running');
     app.controller.dispose();
 });
 
@@ -334,42 +327,36 @@ test('a status response captured before a reset cannot restore its old progress'
     app.controller.dispose();
 });
 
-test('live logs update during pending steps without overwriting progress or accepting older entries', async () => {
+test('CLI status remains readable without rendering server-side log entries', async () => {
+    assert.doesNotMatch(readFileSync('templates/jobs.php', 'utf8'), /data-job-log|data-job-action="(?:start|pause)"/);
     let app = mount();
-    await settle();
-    app.click('previews', 'start');
     await settle();
     app.states.previews = {
         ...app.states.previews,
-        completed: 99,
-        log: [{ id: 2, time: '12:00:00', message: 'Erzeuge Foto 1 …' }]
+        status: 'running',
+        completed: 2,
+        percent: 50,
+        log: [{ id: 2, time: '12:00:00', message: '<img src=x onerror=alert(1)>' }]
     };
     await app.refresh();
-    let $log = app.cards.get('previews').querySelector('[data-job-log]');
-    assert.match($log.textContent, /Erzeuge Foto 1/);
-    assert.match(app.cards.get('previews').querySelector('[data-job-count]').textContent, /^1 \/ 4/);
-    app.states.previews.log = [{ id: 1, time: '11:59:59', message: 'Veraltet' }];
-    await app.refresh();
-    assert.doesNotMatch($log.textContent, /Veraltet/);
-    app.complete('previews');
-    await settle();
-    assert.match($log.textContent, /Erzeuge Foto 1/);
+    assert.equal(app.cards.get('previews').querySelector('[data-job-status]').textContent, '50 % · Läuft');
+    assert.match(app.cards.get('previews').querySelector('[data-job-count]').textContent, /^2 \/ 4/);
+    assert.equal(app.cards.get('previews').querySelector('[data-job-message]').textContent, '');
+    assert.deepEqual(app.requests, []);
     app.controller.dispose();
 });
 
-test('log messages remain plain text and confirmed resets clear only their own history', async () => {
-    let app = mount({ confirm: true });
+test('a rejected reset preserves progress and displays its error as plain text', async () => {
+    let message = 'CLI läuft <img src=x onerror=alert(1)>';
+    let app = mount({ confirm: true, resetError: message });
     await settle();
-    for (let job of Object.keys(app.states)) {
-        app.states[job].log = [{ id: 3, time: '12:00:00', message: '<img src=x onerror=alert(1)>' }];
-        app.cards.get(job).dataset.state = JSON.stringify(app.states[job]);
-    }
-    app.controller.update();
-    let $log = app.cards.get('scan').querySelector('[data-job-log]');
-    assert.match($log.textContent, /<img/);
-    app.states.scan.log = [];
+    app.states.scan.status = 'running';
+    await app.refresh();
     await app.click('scan', 'reset');
-    assert.equal($log.textContent, 'Noch keine Aktivitäten.');
-    assert.match(app.cards.get('tag').querySelector('[data-job-log]').textContent, /<img/);
+    assert.equal(app.cards.get('scan').querySelector('[data-job-status]').textContent, '25 % · Läuft');
+    assert.equal(app.cards.get('scan').querySelector('[data-job-message]').textContent, message);
+    assert.equal(app.cards.get('scan').querySelector('[data-job-action="reset"]').disabled, false);
+    assert.equal(app.cards.get('tag').querySelector('[data-job-message]').textContent, '');
+    assert.deepEqual(app.requests, [{ action: 'job-reset', job: 'scan' }]);
     app.controller.dispose();
 });
