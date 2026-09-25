@@ -234,14 +234,8 @@ h1 {
     color: var(--green);
     font-variant-numeric: tabular-nums;
 }
-.job-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-.job-log {
-    height: 130px;
-    margin: 0;
+.job-command {
+    margin: 16px 0;
     padding: 10px;
     overflow: auto;
     white-space: pre-wrap;
@@ -250,6 +244,7 @@ h1 {
     border: 1px solid var(--line);
     border-radius: 8px;
     font: 11px/1.6 monospace;
+    user-select: all;
 }
 .job-message {
     min-height: 3em;

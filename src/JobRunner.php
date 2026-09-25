@@ -65,6 +65,16 @@ final class JobRunner
         foreach (array_keys(self::LABELS) as $job) {
             $jobs[$job] = $this->status($job);
             unset($jobs[$job]['token']);
+            if ($jobs[$job]['status'] === 'running') {
+                $path = $this->dataPath . '/cli-' . $job . '.lock';
+                $lock = is_file($path) ? fopen($path, 'r') : false;
+                if ($lock === false || flock($lock, LOCK_EX | LOCK_NB)) {
+                    $jobs[$job]['status'] = 'paused';
+                }
+                if (is_resource($lock)) {
+                    fclose($lock);
+                }
+            }
         }
         return $jobs;
     }
@@ -251,7 +261,10 @@ final class JobRunner
      */
     public function reset(string $job): array
     {
-        $locks = [$this->lock($job)];
+        if (!isset(self::LABELS[$job])) {
+            throw new \InvalidArgumentException('Unbekannter Job.');
+        }
+        $locks = [];
         $database = $this->library->database;
         try {
             $names = match ($job) {
@@ -269,6 +282,14 @@ final class JobRunner
                 'tag' => ['tag'],
                 'faces' => ['faces']
             };
+            $names = [
+                ...array_map(
+                    fn(string $name): string => 'cli-' . $name,
+                    $job === 'scan' ? array_keys(self::LABELS) : [$job]
+                ),
+                'job-' . $job,
+                ...$names
+            ];
             foreach ($names as $name) {
                 $lock = fopen($this->dataPath . '/' . $name . '.lock', 'c');
                 if ($lock === false) {

@@ -785,7 +785,7 @@ final class PhotoButler
     {
         $locks = [];
         try {
-            foreach (['job-tag', 'job-faces', 'tag', 'faces'] as $name) {
+            foreach (['cli-tag', 'cli-faces', 'job-tag', 'job-faces', 'tag', 'faces'] as $name) {
                 $lock = fopen($this->dataPath . '/' . $name . '.lock', 'c');
                 if ($lock === false) {
                     throw new \RuntimeException('Zurücksetzen nicht möglich. Schreibrechte prüfen.');
@@ -1006,8 +1006,11 @@ final class PhotoButler
                 session_write_close();
                 set_time_limit(120);
                 try {
-                    if (in_array($action, ['scan', 'tag'], true)) {
-                        throw new \RuntimeException('Bitte den gewünschten Job unter Jobs manuell starten.', 410);
+                    if (in_array($action, ['scan', 'tag', 'job-start', 'job-pause', 'job-step'], true)) {
+                        throw new \RuntimeException(
+                            'Jobs ausschließlich über den angezeigten PHP-Konsolenbefehl ausführen.',
+                            410
+                        );
                     }
                     if ($action === 'analysis-reset') {
                         $this->resetAnalysis();
@@ -1015,18 +1018,7 @@ final class PhotoButler
                         return;
                     }
                     $job = is_string($_POST['job'] ?? null) ? $_POST['job'] : '';
-                    $result = match ($action) {
-                        'job-reset' => $this->jobs->reset($job),
-                        'job-start' => $this->jobs->start($job),
-                        'job-pause' => $this->jobs->pause(
-                            $job,
-                            is_string($_POST['token'] ?? null) ? $_POST['token'] : ''
-                        ),
-                        'job-step' => $this->jobs->step(
-                            $job,
-                            is_string($_POST['token'] ?? null) ? $_POST['token'] : ''
-                        )
-                    };
+                    $result = $this->jobs->reset($job);
                     echo json_encode($result, JSON_THROW_ON_ERROR);
                 } catch (\InvalidArgumentException $exception) {
                     http_response_code(422);
@@ -1036,7 +1028,7 @@ final class PhotoButler
                     echo json_encode([
                         'error' =>
                             $exception->getCode() === 410
-                                ? 'Bitte unter Jobs manuell starten.'
+                                ? $exception->getMessage()
                                 : 'Job nicht verfügbar. Ein anderer Schritt läuft noch oder Quellen, Konfiguration und Schreibrechte müssen geprüft werden.'
                     ]);
                 }
@@ -1248,6 +1240,19 @@ final class PhotoButler
         $person = max(0, (int) ($_GET['person'] ?? 0));
         $jobsView = ($_GET['view'] ?? '') === 'jobs';
         $jobs = $jobsView ? $this->jobs->all() : [];
+        $jobCommands = [];
+        foreach ($jobs as $job => &$state) {
+            unset($state['log']);
+            $jobCommands[$job] =
+                'php ' .
+                escapeshellarg(dirname(__DIR__) . '/bin/photobutler-index') .
+                ' --root=' .
+                escapeshellarg(dirname($this->dataPath)) .
+                ' --' .
+                $job .
+                '-only';
+        }
+        unset($state);
         $peopleView = ($_GET['view'] ?? '') === 'persons';
         $persons = $this->faces->persons();
         $selectedPerson = null;

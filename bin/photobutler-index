@@ -6,7 +6,7 @@ require $_composer_autoload_path ?? __DIR__ . '/../vendor/autoload.php';
 
 $options = getopt('', ['root:', 'scan-only', 'tag-only', 'faces-only', 'previews-only', 'regroup-faces', 'limit:', 'scan-limit:', 'help']);
 if (isset($options['help'])) {
-    echo "photobutler-index [--root=/app] [--scan-only|--tag-only|--faces-only|--previews-only|--regroup-faces] [--limit=50] [--scan-limit=100]\n";
+    echo "photobutler-index [--root=/app] [--scan-only|--tag-only|--faces-only|--previews-only|--regroup-faces] [--limit=N] [--scan-limit=N]\nOhne Limit läuft der gewählte Job bis zum Ende. Strg+C beendet ihn nach dem aktuellen Schritt.\n";
     exit(0);
 }
 if (count(array_intersect(['scan-only', 'tag-only', 'faces-only', 'previews-only', 'regroup-faces'], array_keys($options))) !== 1) {
@@ -19,8 +19,16 @@ foreach (['limit', 'scan-limit'] as $option) {
         exit(1);
     }
 }
+$lock = null;
+$state = null;
+$stopped = false;
+$exitCode = 0;
 try {
-    $library = new \vielhuber\photobutler\PhotoButler((string) ($options['root'] ?? getcwd()));
+    $root = realpath((string) ($options['root'] ?? getcwd()));
+    if ($root === false) {
+        throw new \RuntimeException('Projektordner nicht verfügbar.');
+    }
+    $library = new \vielhuber\photobutler\PhotoButler($root);
     if (isset($options['regroup-faces'])) {
         $count = $library->faces->regroup();
         echo "$count doppelte Personengruppen zusammengeführt. Keine Fotos oder KI-Tags neu verarbeitet.\n";
@@ -32,20 +40,56 @@ try {
         isset($options['previews-only']) => 'previews',
         default => 'tag'
     };
-    $state = $library->jobs->start($job);
-    $limit = $job === 'scan' ? 1 : (int) ($options['limit'] ?? 50);
-    for ($step = 0; $step < $limit && $state['status'] === 'running'; $step++) {
-        $state = $library->jobs->step($job, $state['token'], (int) ($options['scan-limit'] ?? PHP_INT_MAX), previewLimit: 1);
-        echo $state['percent'] . " % · " . $state['completed'] . "/" . $state['total'] .
-            ($state['estimated'] ? " (geschätzt)" : "") . " · " . $state['errors'] . " Fehler\n";
+    $lock = fopen($root . '/.data/cli-' . $job . '.lock', 'c');
+    if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
+        throw new \RuntimeException('Dieser CLI-Job läuft bereits.');
     }
-    if ($state['status'] === 'running') {
-        $library->jobs->pause($job);
+    if (function_exists('pcntl_async_signals')) {
+        pcntl_async_signals(true);
+        foreach ([SIGINT, SIGTERM] as $signal) {
+            pcntl_signal($signal, static function (int $signal) use (&$stopped, &$exitCode): void {
+                $stopped = true;
+                $exitCode = 128 + $signal;
+            });
+        }
+    }
+    set_time_limit(0);
+    $state = $library->jobs->start($job);
+    $limit = (int) ($options[$job === 'scan' ? 'scan-limit' : 'limit'] ?? PHP_INT_MAX);
+    $processed = 0;
+    while (!$stopped && $processed < $limit && $state['status'] === 'running') {
+        $before = $state;
+        $state = $library->jobs->step(
+            $job,
+            $state['token'],
+            scanLimit: min(1000, $limit - $processed),
+            previewLimit: min(25, $limit - $processed)
+        );
+        $processed += match ($job) {
+            'scan' => $library->scanProgress->checked - ($before['checked'] ?? 0),
+            'previews' => $state['completed'] + $state['errors'] - $before['completed'] - $before['errors'],
+            default => 1
+        };
+        echo $state['percent'] . " % · " . $state['completed'] . "/" . $state['total'] .
+            ($state['estimated'] ? " (geschätzt)" : "") . " · " . $state['errors'] . " Fehler · " . $state['eta'] . "\n";
     }
     if ($state['errors'] > 0) {
-        exit(1);
+        $exitCode = 1;
     }
 } catch (\RuntimeException | \JsonException $exception) {
-    fwrite(STDERR, "photobutler konnte den Lauf nicht abschließen. Fotoquellen, .data/.env und Schreibrechte prüfen.\n");
-    exit(1);
+    fwrite(STDERR, "photobutler konnte den Lauf nicht abschließen. Läuft der Job bereits? Fotoquellen, Konfiguration und Schreibrechte prüfen.\n");
+    $exitCode = 1;
+} finally {
+    try {
+        if (($state['status'] ?? '') === 'running') {
+            $library->jobs->pause($job, $state['token']);
+            echo "Pausiert. Mit demselben Befehl fortsetzen.\n";
+        }
+    } finally {
+        if (is_resource($lock)) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
 }
+exit($exitCode);
