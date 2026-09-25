@@ -224,6 +224,55 @@ final class AuthenticationTest extends TestCase
         }
     }
 
+    public function testJobsReturnJsonWhenInventoryProcessCannotStart(): void
+    {
+        file_put_contents(
+            $this->root . '/public/index.php',
+            '<?php declare(strict_types=1);' .
+                ' ini_set("display_errors", "1"); ini_set("html_errors", "1");' .
+                ' putenv(' .
+                var_export('PATH=' . $this->root . '/missing-bin', true) .
+                ');' .
+                ' require ' .
+                var_export(dirname(__DIR__) . '/vendor/autoload.php', true) .
+                ';' .
+                ' (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();'
+        );
+        $this->login();
+        for ($request = 0; $request < 2; $request++) {
+            [$status, $body, $headers] = $this->request('?jobs=1');
+            $this->assertSame(200, $status);
+            $this->assertStringContainsString('application/json', $headers);
+            $jobs = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame(['scan', 'previews', 'tag', 'faces'], array_keys($jobs));
+            $this->assertStringContainsString('Bestandsaufnahme nicht verfügbar', $jobs['scan']['warning']);
+            foreach ($jobs as $job) {
+                $this->assertSame('idle', $job['status']);
+                $this->assertSame([], $job['log']);
+            }
+        }
+        [$status, $body] = $this->request('?view=jobs');
+        $this->assertSame(200, $status);
+        $this->assertStringNotContainsString('proc_open()', $body);
+        $this->assertStringNotContainsString('Warning:', $body);
+        preg_match('/name="csrf-token" content="([^"]+)"/', $body, $match);
+        [$status, $body] = $this->request('', [
+            'action' => 'job-start',
+            'job' => 'scan',
+            'csrf' => $match[1]
+        ]);
+        $this->assertSame(503, $status);
+        $this->assertArrayHasKey('error', json_decode($body, true, flags: JSON_THROW_ON_ERROR));
+        $this->assertSame(
+            0,
+            (int) $this->library->database->query('SELECT COUNT(*) FROM import_inventory')->fetchColumn()
+        );
+        $this->assertSame(
+            'idle',
+            $this->library->database->query("SELECT status FROM jobs WHERE job = 'scan'")->fetchColumn()
+        );
+    }
+
     public function testYearCookieSurvivesLostServerSessionAndBrowserSessionCookie(): void
     {
         [, , $headers] = $this->login('?https=1');

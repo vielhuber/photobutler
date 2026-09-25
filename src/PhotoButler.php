@@ -153,11 +153,21 @@ final class PhotoButler
                         array_push($known, ...$statement->fetchAll(\PDO::FETCH_COLUMN));
                     }
                 }
-                $process = proc_open(
-                    ['node', dirname(__DIR__) . '/scripts/import-inventory.cjs'],
-                    [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']],
-                    $pipes
-                );
+                set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
+                    throw new \RuntimeException(
+                        'Bestandsaufnahme nicht verfügbar. Node.js im PHP-Suchpfad und Prozessrechte prüfen.',
+                        previous: new \ErrorException($message, 0, $severity, $file, $line)
+                    );
+                }, E_WARNING);
+                try {
+                    $process = proc_open(
+                        ['node', dirname(__DIR__) . '/scripts/import-inventory.cjs'],
+                        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']],
+                        $pipes
+                    );
+                } finally {
+                    restore_error_handler();
+                }
                 if ($process === false) {
                     throw new \RuntimeException('Bestandsaufnahme nicht verfügbar.');
                 }
