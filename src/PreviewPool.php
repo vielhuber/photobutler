@@ -68,16 +68,27 @@ final class PreviewPool
                             throw new \RuntimeException('Vorschau-Worker nicht verfügbar.');
                         }
                         $deadline = microtime(true) + 5;
+                        $connectionFailure = null;
                         do {
                             clearstatcache(true, $socket);
                             if (file_exists($socket)) {
-                                $connection = stream_socket_client('unix://' . $socket, timeout: 1);
-                                break;
+                                try {
+                                    $connection = stream_socket_client('unix://' . $socket, timeout: 1);
+                                    if ($connection !== false) {
+                                        break;
+                                    }
+                                } catch (\ErrorException $exception) {
+                                    // The socket can exist before the worker starts listening.
+                                    $connectionFailure = $exception;
+                                }
                             }
                             usleep(10000);
                         } while (microtime(true) < $deadline);
                         if ($connection === false) {
-                            throw new \RuntimeException('Vorschau-Worker nicht verfügbar.');
+                            throw new \RuntimeException(
+                                'Vorschau-Worker nicht verfügbar.',
+                                previous: $connectionFailure
+                            );
                         }
                         file_put_contents($registry, $socket, LOCK_EX);
                     } finally {
