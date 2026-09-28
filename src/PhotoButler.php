@@ -446,11 +446,6 @@ final class PhotoButler
         int $id = 0,
         ?int $offset = null
     ): array {
-        $favoriteMode = match ($favorites) {
-            true, '1' => '1',
-            'none' => 'none',
-            default => '0'
-        };
         if ($sort === 'random') {
             $this->database->createFunction(
                 'gallery_random',
@@ -466,15 +461,70 @@ final class PhotoButler
             'month_desc' => 'substr(taken, 6, 2) DESC, taken DESC, id DESC',
             default => 'taken DESC, id DESC'
         };
+        $statement = $this->selectPhotos(
+            columns: '*',
+            query: $query,
+            album: $album,
+            tag: $tag,
+            favorites: $favorites,
+            person: $person,
+            relevance: $relevance,
+            id: $id,
+            suffix: 'ORDER BY ' . $order . ' LIMIT 60 OFFSET ' . max(0, $offset ?? (max(1, $page) - 1) * 60)
+        );
+        return array_map(fn(array $row): \stdClass => $this->photoFromRow($row), $statement->fetchAll());
+    }
+
+    /**
+     * Count every matching photo regardless of pagination or sorting.
+     */
+    public function photoCount(
+        string $query = '',
+        string $album = '',
+        string $tag = '',
+        bool|string $favorites = false,
+        int $person = 0,
+        string $relevance = 'all'
+    ): int {
+        return (int) $this->selectPhotos(
+            columns: 'COUNT(*)',
+            query: $query,
+            album: $album,
+            tag: $tag,
+            favorites: $favorites,
+            person: $person,
+            relevance: $relevance
+        )->fetchColumn();
+    }
+
+    /**
+     * Keep the listing and total count on the same source, rating and metadata filters.
+     */
+    private function selectPhotos(
+        string $columns,
+        string $query = '',
+        string $album = '',
+        string $tag = '',
+        bool|string $favorites = false,
+        int $person = 0,
+        string $relevance = 'all',
+        int $id = 0,
+        string $suffix = ''
+    ): \PDOStatement {
+        $favoriteMode = match ($favorites) {
+            true, '1' => '1',
+            'none' => 'none',
+            default => '0'
+        };
         $query = '%' . strtr(mb_strtolower($query), ['\\' => '\\\\', '%' => '\\%', '_' => '\\_']) . '%';
-        $statement = $this->database->prepare("SELECT * FROM photos WHERE available = 1
+        $statement = $this->database->prepare("SELECT $columns FROM photos WHERE available = 1
             AND (? = '0' OR id = ?)
             AND (? = 'all' OR priority = CAST(? AS INTEGER))
             AND (? = '0' OR EXISTS (SELECT 1 FROM faces f WHERE f.photo_id = photos.id AND f.person_id = ? AND f.ignored = 0 AND f.active = 1 AND f.modified = photos.modified AND f.bytes = photos.bytes))
             AND (? = '' OR album = ?) AND (? = '0' OR (priority = 1) = CAST(? AS INTEGER))
             AND (? = '' OR EXISTS (SELECT 1 FROM json_each(COALESCE(manual_tags, ai_tags)) WHERE value = ?))
             AND unicode_lower(name || ' ' || album || ' ' || description || ' ' || COALESCE(manual_tags, ai_tags)) LIKE ? ESCAPE '\'
-            ORDER BY $order LIMIT 60 OFFSET ?");
+            $suffix");
         $statement->execute([
             $id,
             $id,
@@ -492,10 +542,9 @@ final class PhotoButler
             (int) ($favoriteMode === '1'),
             $tag,
             $tag,
-            $query,
-            max(0, $offset ?? (max(1, $page) - 1) * 60)
+            $query
         ]);
-        return array_map(fn(array $row): \stdClass => $this->photoFromRow($row), $statement->fetchAll());
+        return $statement;
     }
 
     /**
@@ -1275,6 +1324,16 @@ final class PhotoButler
                     relevance: $relevance,
                     seed: $seed,
                     offset: $offset
+                );
+        $matchedPhotos =
+            $peopleView || $jobsView
+                ? null
+                : $this->photoCount(
+                    album: $album,
+                    tag: $tag,
+                    favorites: $favorites,
+                    person: $person,
+                    relevance: $relevance
                 );
         $tags = $this->database
             ->query(

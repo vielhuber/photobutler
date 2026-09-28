@@ -54,12 +54,12 @@ $jobsView ??= false;
                         }))
         ) ?></span></span></header>
         <section class="intro">
-            <div><h1><?= $escape($title) ?></h1><p class="muted"><?= number_format(
-    (int) $stats['total'],
-    0,
-    ',',
-    '.'
-) ?> Fotos</p></div>
+            <div><h1><?= $escape($title) ?></h1><p class="muted"<?php if (
+    $matchedPhotos !== null
+): ?> id="gallery-count" data-matched="<?= $matchedPhotos ?>" data-total="<?= (int) $stats[
+    'total'
+] ?>"<?php endif; ?>><?= ($matchedPhotos === null ? '' : number_format($matchedPhotos, 0, ',', '.') . ' von ') .
+    number_format((int) $stats['total'], 0, ',', '.') ?> Fotos</p></div>
         </section>
         <?php if ($jobsView) {
             require __DIR__ . '/jobs.php';

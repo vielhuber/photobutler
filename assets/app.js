@@ -335,6 +335,12 @@ export function initializeGallery(navigatePage) {
             (mode === '1' && value !== 1) ||
             (mode === 'none' && value === 1);
         if ($card) {
+            let $count = document.querySelector('#gallery-count');
+            if ($count && $card.parentElement.hidden !== hidden) {
+                let matched = Number($count.dataset.matched) + (hidden ? -1 : 1);
+                $count.dataset.matched = String(matched);
+                $count.textContent = `${matched.toLocaleString('de-DE')} von ${Number($count.dataset.total).toLocaleString('de-DE')} Fotos`;
+            }
             $card.dataset.priority = String(value);
             $card.parentElement.hidden = hidden;
             $cards = [...document.querySelectorAll('[data-photo]')].filter($item => !$item.parentElement.hidden);

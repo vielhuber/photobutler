@@ -100,7 +100,10 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             assert.equal(first.relevance, 'relevant');
             assert.equal(first.columns, '7');
             assert.ok(first.priorities.every(priority => priority === 1));
-            if (!live) assert.deepEqual(first.priorities, [1]);
+            if (!live) {
+                assert.deepEqual(first.priorities, [1]);
+                assert.equal(await page.locator('#gallery-count').textContent(), '1 von 3 Fotos');
+            }
             assert.deepEqual(await page.locator('#gallery-relevance option').allTextContents(), [
                 'Alle anzeigen',
                 'Eingeblendete Fotos',
@@ -121,7 +124,13 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 assert.equal(state.relevance, relevance);
                 assert.equal(state.columns, '7');
                 assert.ok(state.priorities.every(value => priority === null || value === priority));
-                if (!live) assert.equal(state.priorities.length, priority === null ? 3 : 1);
+                if (!live) {
+                    assert.equal(state.priorities.length, priority === null ? 3 : 1);
+                    assert.equal(
+                        await page.locator('#gallery-count').textContent(),
+                        `${priority === null ? 3 : 1} von 3 Fotos`
+                    );
+                }
                 let response = await page.request.get(url + '?relevance=' + relevance);
                 assert.equal(response.ok(), true);
                 let html = await response.text();
@@ -168,11 +177,13 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                     if (failure) fs.writeFileSync(root + '/.data/rating-failure', '1');
                     await page.locator(`[data-priority-photo="${id}"][data-priority="1"]`).click();
                     assert.equal(await page.locator(`[data-photo="${id}"]`).isVisible(), false);
+                    assert.equal(await page.locator('#gallery-count').textContent(), '0 von 3 Fotos');
                     await page.waitForFunction(
                         id => !document.querySelector(`[data-priority-photo="${id}"]`).disabled,
                         id
                     );
                     assert.equal(await page.locator(`[data-photo="${id}"]`).isVisible(), failure);
+                    assert.equal(await page.locator('#gallery-count').textContent(), `${failure ? 1 : 0} von 3 Fotos`);
                     if (failure) fs.unlinkSync(root + '/.data/rating-failure');
                 }
                 await page.reload();
@@ -180,9 +191,11 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 await page.locator('#gallery-relevance').selectOption('unrated');
                 await page.waitForURL(/relevance=unrated/);
                 assert.equal(await page.locator('.photo-card').count(), 2);
+                assert.equal(await page.locator('#gallery-count').textContent(), '2 von 3 Fotos');
                 await page.locator(`[data-priority-photo="${id}"][data-priority="1"]`).click();
                 await page.waitForFunction(id => !document.querySelector(`[data-priority-photo="${id}"]`).disabled, id);
                 assert.equal(await page.locator(`[data-photo="${id}"]`).isVisible(), false);
+                assert.equal(await page.locator('#gallery-count').textContent(), '1 von 3 Fotos');
                 await page.locator('#gallery-relevance').selectOption('relevant');
                 await page.waitForURL(/relevance=relevant/);
                 await page.waitForFunction(

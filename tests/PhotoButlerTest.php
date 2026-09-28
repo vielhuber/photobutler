@@ -810,6 +810,53 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(1, $this->library->jobs->all()['tag']['errors']);
     }
 
+    public function testFilteredPhotoCountsIncludeEveryPageAndUseTheListingFilters(): void
+    {
+        $this->library->index();
+        $insert = $this->library->database->prepare("INSERT INTO photos
+            (root, path, album, name, modified, bytes, width, height, taken, seen, priority, manual_tags)
+            SELECT root, path || ?, ?, ?, modified, bytes, width, height, taken, seen, ?, ? FROM photos WHERE id = 1");
+        for ($id = 2; $id <= 72; $id++) {
+            $insert->execute([
+                (string) $id,
+                $id % 2 === 0 ? 'Even' : 'Odd',
+                'Item ' . $id,
+                ($id % 3) - 1,
+                $id % 2 === 0 ? '["Test"]' : '[]'
+            ]);
+        }
+        $this->library->database->exec('UPDATE photos SET available = 0 WHERE id = 72');
+        $this->assertSame(71, $this->library->photoCount());
+        $this->assertCount(60, $this->library->photos());
+        $this->assertCount(11, $this->library->photos(page: 2));
+        $this->assertSame(24, $this->library->photoCount(relevance: 'unrated'));
+        $this->assertSame(24, $this->library->photoCount(relevance: 'relevant'));
+        $this->assertSame(23, $this->library->photoCount(relevance: 'excluded'));
+        $this->assertSame(35, $this->library->photoCount(album: 'Even', tag: 'Test'));
+        $this->assertSame(0, $this->library->photoCount(relevance: 'relevant', favorites: 'none'));
+        foreach (['all', 'unrated', 'relevant', 'excluded'] as $relevance) {
+            foreach ([false, true, 'none'] as $favorites) {
+                $this->assertSame(
+                    count(
+                        $this->library->photos(album: 'Even', tag: 'Test', favorites: $favorites, relevance: $relevance)
+                    ),
+                    $this->library->photoCount(album: 'Even', tag: 'Test', favorites: $favorites, relevance: $relevance)
+                );
+            }
+        }
+        $this->assertSame(70, $this->library->photoCount(query: 'Item'));
+        $this->assertSame(0, $this->library->photoCount(query: '%'));
+        $this->library->database->exec("INSERT INTO persons (id, name) VALUES (1, 'Fixture');
+            INSERT INTO faces (photo_id, person_id, modified, bytes, model, box, embedding, crop)
+            SELECT id, 1, modified, bytes, 'fixture', '[]', '[]', '' FROM photos WHERE id IN (1, 2)");
+        $this->assertSame(2, $this->library->photoCount(person: 1));
+        $this->assertSame(1, $this->library->photoCount(person: 1, relevance: 'unrated'));
+        $this->library->database->exec('UPDATE faces SET ignored = 1 WHERE photo_id = 2');
+        $this->assertSame(1, $this->library->photoCount(person: 1));
+        $this->library->database->exec('UPDATE faces SET bytes = 0 WHERE photo_id = 1');
+        $this->assertSame(0, $this->library->photoCount(person: 1));
+    }
+
     public function testTaggingNeverProcessesFaces(): void
     {
         $this->library->index();
@@ -909,6 +956,7 @@ final class PhotoButlerTest extends TestCase
     {
         $this->library->index();
         $photos = array_fill(0, 60, $this->library->photos()[0]);
+        $matchedPhotos = 61;
         $stats = [
             'total' => 61,
             'tagged' => 0,
@@ -949,6 +997,7 @@ final class PhotoButlerTest extends TestCase
         $this->assertStringContainsString('type="module" src="?asset=navigation.js"', $html);
         $this->assertLessThan(strpos($html, '?asset=app.css'), strpos($html, '?asset=preferences.js'));
         $document = \Dom\HTMLDocument::createFromString($html, LIBXML_NOERROR);
+        $this->assertSame('61 von 61 Fotos', $document->querySelector('#gallery-count')->textContent);
         $this->assertSame(7, $document->querySelectorAll('#gallery-columns option')->length);
         foreach (range(3, 9) as $columns) {
             $this->assertSame(
