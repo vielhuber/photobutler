@@ -343,8 +343,7 @@ final class FaceStoreTest extends TestCase
             1,
             (int) $this->library->database->query('SELECT ignored FROM faces WHERE id = 1')->fetchColumn()
         );
-        touch($photo['path'], $photo['modified'] + 5);
-        clearstatcache();
+        $this->library->database->exec('UPDATE photos SET modified = modified + 5 WHERE id = 1');
         $store->reset(1, false);
         $this->assertFalse($store->save($photo, $this->analysisResult([[1.0]])));
         $this->library->index();
@@ -460,6 +459,10 @@ final class FaceStoreTest extends TestCase
         symlink($runtime, $this->root . '/.data/face-runtime');
         $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Unverändert\"]'");
         $hash = hash_file('sha256', $this->photo(1)['path']);
+        foreach (range(1, 4) as $id) {
+            $this->assertNotNull($this->library->imagePath($id));
+        }
+        imagepng(imagecreatetruecolor(80, 60), $this->library->imagePath(1, cachedOnly: true));
         $this->assertSame(4, $this->library->tagFaces(4));
         $this->assertSame(0, $this->library->tagFaces(4));
         $this->assertSame(
@@ -477,8 +480,8 @@ final class FaceStoreTest extends TestCase
         $archive->close();
         $this->library->index();
         $this->library->database->exec("UPDATE photos SET status = 'done'");
-        $this->assertSame(1, $this->library->tagFaces(1));
-        $this->assertSame('unsupported', $this->library->photo(5)->face_status);
+        $this->assertSame(0, $this->library->tagFaces(1));
+        $this->assertSame('error', $this->library->photo(5)->face_status);
         $this->assertSame(0, $this->library->tagFaces(1));
         $this->library->database->exec("UPDATE photos SET status = 'pending' WHERE id = 1");
         $this->assertSame(0, $this->library->tag(1));

@@ -31,12 +31,16 @@ final class PhotoButler
     public readonly FaceStore $faces;
     public readonly DuplicateStore $duplicates;
     public readonly JobRunner $jobs;
+    public readonly ?OneDriveSource $oneDrive;
 
     /**
      * Load private settings and open the persistent photo index.
      */
-    public function __construct(string $rootDir, ?PhotoRenderer $photoRenderer = null)
-    {
+    public function __construct(
+        string $rootDir,
+        ?PhotoRenderer $photoRenderer = null,
+        ?OneDriveClient $oneDriveClient = null
+    ) {
         $this->photoRenderer = $photoRenderer;
         $this->dataPath = $rootDir . '/.data';
         if (!is_file($this->dataPath . '/.env')) {
@@ -117,6 +121,19 @@ final class PhotoButler
         $this->duplicates = new DuplicateStore($this->database, $this->dataPath);
         $this->faces = new FaceStore($this->database);
         $this->jobs = new JobRunner($this, $this->dataPath);
+        $this->oneDrive =
+            $this->getSetting('ONEDRIVE_CLIENT_ID') === ''
+                ? null
+                : new OneDriveSource(
+                    $this,
+                    $this->dataPath,
+                    $oneDriveClient ??
+                        new OneDriveClient(
+                            $this->dataPath,
+                            $this->getSetting('ONEDRIVE_CLIENT_ID'),
+                            $this->getSetting('ONEDRIVE_TENANT') ?: 'consumers'
+                        )
+                );
     }
 
     /**
@@ -132,6 +149,9 @@ final class PhotoButler
      */
     public function importProgress(bool $refresh = false): array
     {
+        if ($this->oneDrive !== null) {
+            return $this->oneDrive->progress();
+        }
         $roots = $this->photoPaths();
         $scope = json_encode($roots, JSON_THROW_ON_ERROR);
         $inventory = $this->database->query('SELECT roots, estimated FROM import_inventory WHERE id = 1')->fetch();
@@ -147,7 +167,7 @@ final class PhotoButler
                     }
                     if (!$refresh) {
                         $statement = $this->database->prepare(
-                            'SELECT path FROM (SELECT path FROM photos WHERE available = 1 UNION SELECT path FROM photo_duplicates) WHERE substr(path, 1, length(?)) = ?'
+                            'SELECT path FROM photos WHERE available = 1 AND substr(path, 1, length(?)) = ?'
                         );
                         $statement->execute([$root . '/', $root . '/']);
                         array_push($known, ...$statement->fetchAll(\PDO::FETCH_COLUMN));
@@ -214,11 +234,8 @@ final class PhotoButler
         $progress = $this->database
             ->query(
                 "SELECT COUNT(*) AS total,
-            COALESCE(SUM(p.available = 1 OR (d.path IS NOT NULL AND c.available = 1 AND h.digest = d.digest)), 0) AS completed
-            FROM import_files i LEFT JOIN photos p ON p.path = i.path
-            LEFT JOIN photo_duplicates d ON d.path = i.path
-            LEFT JOIN photos c ON c.id = d.canonical_id
-            LEFT JOIN photo_hashes h ON h.path = c.path AND h.modified = c.modified AND h.bytes = c.bytes"
+            COALESCE(SUM(p.available = 1), 0) AS completed
+            FROM import_files i LEFT JOIN photos p ON p.path = i.path"
             )
             ->fetch();
         $progress['estimated'] = (int) $inventory['estimated'];
@@ -226,7 +243,7 @@ final class PhotoButler
     }
 
     /**
-     * Resume discovery and fingerprint changed originals; limit counts inspected source files.
+     * Resume path-only discovery without opening originals; limit counts inspected source files.
      */
     public function index(int $limit = PHP_INT_MAX): int
     {
@@ -235,6 +252,9 @@ final class PhotoButler
             throw new \RuntimeException('Dieser Hintergrundlauf läuft bereits.', 409);
         }
         try {
+            if ($this->oneDrive !== null) {
+                return $this->oneDrive->index();
+            }
             $roots = $this->photoPaths();
             foreach ($roots as $root) {
                 if (realpath($root) !== $root || !is_dir($root) || !is_readable($root)) {
@@ -338,50 +358,9 @@ final class PhotoButler
                     }
                     $find->execute([':path' => $path]);
                     $existing = $find->fetch();
-                    $unchanged =
-                        $existing && (int) $existing['modified'] === $modified && (int) $existing['bytes'] === $bytes;
-                    if (!in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), self::VIDEO_EXTENSIONS, true)) {
-                        $digest = $this->duplicates->fingerprint($path, $modified, $bytes);
-                        if (!$existing || !$existing['indexed']) {
-                            $canonical = $this->duplicates->canonical($path, $digest, $bytes, $roots);
-                            if ($existing && $canonical !== null && $existing['id'] < $canonical['id']) {
-                                $canonical = null;
-                            }
-                            if ($canonical !== null) {
-                                $excluded = $this->database->prepare(
-                                    'SELECT canonical_id FROM photo_duplicates WHERE path = ? AND digest = ?'
-                                );
-                                $excluded->execute([$path, $digest]);
-                                if ($existing && (int) $excluded->fetchColumn() !== $canonical['id']) {
-                                    $faces = $this->database->prepare(
-                                        'SELECT (SELECT COUNT(*) FROM faces WHERE photo_id = ?) + (SELECT COUNT(*) FROM face_state WHERE photo_id = ?)'
-                                    );
-                                    $faces->execute([$existing['id'], $existing['id']]);
-                                    if (
-                                        $existing['priority'] !== $canonical['priority'] ||
-                                        $existing['manual_tags'] !== $canonical['manual_tags'] ||
-                                        (int) $faces->fetchColumn() > 0
-                                    ) {
-                                        throw new \RuntimeException(
-                                            'Duplikat mit geschützten Metadaten. Import abgebrochen; manuelle Prüfung erforderlich.'
-                                        );
-                                    }
-                                }
-                                $this->duplicates->exclude($path, $canonical['id'], $digest);
-                                continue;
-                            }
-                        }
-                        $this->database->prepare('DELETE FROM photo_duplicates WHERE path = ?')->execute([$path]);
-                    }
-                    if ($unchanged && $existing['indexed']) {
+                    if ($existing && $existing['indexed']) {
                         $mark->execute([$scan->seen, $existing['id']]);
                         continue;
-                    }
-                    $thumbnailPath = $this->dataPath . '/thumbnails/' . hash('sha256', $path) . '.jpg';
-                    foreach ([$thumbnailPath, $thumbnailPath . '.webp'] as $cachedPath) {
-                        if (!$unchanged && is_file($cachedPath)) {
-                            unlink($cachedPath);
-                        }
                     }
                     $album = dirname(substr($path, strlen($directory->root) + 1));
                     $id = $existing['id'] ?? $nextId++;
@@ -391,9 +370,9 @@ final class PhotoButler
                         $path,
                         $album === '.' ? basename($directory->root) : $album,
                         $entry,
-                        $modified,
-                        $bytes,
-                        date('Y-m-d H:i:s', $modified),
+                        $existing['modified'] ?? $modified,
+                        $existing['bytes'] ?? $bytes,
+                        date('Y-m-d H:i:s', $existing['modified'] ?? $modified),
                         $scan->seen,
                         $existing['manual_tags'] ?? null,
                         $existing['priority'] ?? 0
@@ -565,7 +544,8 @@ final class PhotoButler
         int $id,
         bool $original = false,
         bool $animated = false,
-        bool $cachedOnly = false
+        bool $cachedOnly = false,
+        bool $generate = true
     ): ?string {
         $statement = $this->database->prepare(
             'SELECT path, root, modified, bytes FROM photos WHERE id = ? AND available = 1'
@@ -573,16 +553,27 @@ final class PhotoButler
         $statement->execute([$id]);
         $row = $statement->fetch();
         $statement->closeCursor();
+        $remote = $this->oneDrive?->photo($id);
+        if ($this->oneDrive !== null && $remote === null) {
+            return null;
+        }
+        if (!$row) {
+            return null;
+        }
+        $source = $row['path'];
         if (
-            !$row ||
-            !in_array($row['root'], $this->photoPaths(), true) ||
-            ((!$cachedOnly || $original) && (!is_file($row['path']) || realpath($row['path']) !== $row['path'])) ||
-            !str_starts_with($row['path'], $row['root'] . '/')
+            $remote === null &&
+            (!in_array($row['root'], $this->photoPaths(), true) ||
+                ((!$cachedOnly || $original) && (!is_file($source) || realpath($source) !== $source)) ||
+                !str_starts_with($row['path'], $row['root'] . '/'))
         ) {
             return null;
         }
-        $path = $original ? $row['path'] : $this->dataPath . '/thumbnails/' . hash('sha256', $row['path']) . '.jpg';
-        if (!$original && !$cachedOnly && !is_file($path)) {
+        if ($original && $remote !== null) {
+            return null;
+        }
+        $path = $original ? $source : $this->dataPath . '/thumbnails/' . hash('sha256', $row['path']) . '.jpg';
+        if ($remote === null && !$original && !$cachedOnly && $generate && !is_file($path)) {
             $lock = fopen($this->dataPath . '/thumbnail-' . $id % 2 . '.lock', 'c');
             if ($lock === false || !flock($lock, LOCK_EX)) {
                 throw new \RuntimeException('Vorschauerstellung nicht verfügbar.');
@@ -594,7 +585,7 @@ final class PhotoButler
                         throw new \ErrorException($message, 0, $severity, $file, $line);
                     });
                     try {
-                        $metadata = $this->generateThumbnail($row['path'], $path);
+                        $metadata = $this->generateThumbnail($source, $path);
                     } finally {
                         restore_error_handler();
                     }
@@ -625,7 +616,10 @@ final class PhotoButler
                 fclose($lock);
             }
         }
-        if (!$original && $animated && is_file($path . '.webp')) {
+        if (!$original && is_link($path)) {
+            return null;
+        }
+        if (!$original && $animated && is_file($path . '.webp') && !is_link($path . '.webp')) {
             return $path . '.webp';
         }
         return is_file($path) ? $path : null;
@@ -695,7 +689,7 @@ final class PhotoButler
                                 throw new \RuntimeException('KI-Konfiguration unvollständig: ' . $key);
                             }
                         }
-                        $path = $this->imagePath((int) $photo['id']);
+                        $path = $this->imagePath((int) $photo['id'], cachedOnly: true);
                         if ($path === null) {
                             throw new \RuntimeException('Vorschaubild nicht verfügbar.');
                         }
@@ -789,11 +783,11 @@ final class PhotoButler
             $photos = $statement->fetchAll();
             $completed = 0;
             foreach ($photos as $photo) {
-                $this->jobs->log('faces', 'Lade Original und analysiere Gesichter für Foto ' . $photo['id'] . ' …');
+                $this->jobs->log('faces', 'Lade Thumbnail und analysiere Gesichter für Foto ' . $photo['id'] . ' …');
                 try {
-                    $path = $this->imagePath((int) $photo['id'], original: true);
+                    $path = $this->imagePath((int) $photo['id'], cachedOnly: true);
                     if ($path === null) {
-                        throw new \RuntimeException('Original für Gesichtsanalyse nicht verfügbar.');
+                        throw new \RuntimeException('Thumbnail fehlt. Zuerst den Thumbnail-Job ausführen.');
                     }
                     $result = new FaceAnalyzer($this->dataPath)->analyze($path);
                 } catch (\RuntimeException | \JsonException | \ErrorException) {
@@ -812,7 +806,7 @@ final class PhotoButler
                     'Foto ' .
                         $photo['id'] .
                         (!$saved || $result->status === 'error'
-                            ? ': Gesichtsanalyse fehlgeschlagen. Original, Installation und Modelle prüfen.'
+                            ? ': Gesichtsanalyse fehlgeschlagen. Thumbnail, Installation und Modelle prüfen.'
                             : ($result->status === 'unsupported'
                                 ? ': Format für Gesichtsanalyse nicht unterstützt.'
                                 : ': Gesichtsanalyse abgeschlossen.'))
@@ -1165,7 +1159,12 @@ final class PhotoButler
         }
         if (isset($_GET['face'])) {
             $crop = $this->faces->crop((int) $_GET['face']);
-            if ($crop === null || $this->imagePath((int) $crop['photo_id'], original: true) === null) {
+            if (
+                $crop === null ||
+                ($this->oneDrive !== null
+                    ? $this->oneDrive->photo((int) $crop['photo_id']) === null
+                    : $this->imagePath((int) $crop['photo_id'], cachedOnly: true) === null)
+            ) {
                 http_response_code(404);
                 return;
             }
@@ -1183,10 +1182,26 @@ final class PhotoButler
         }
         if (isset($_GET['photo'])) {
             $original = in_array($_GET['size'] ?? '', ['original', 'detail'], true);
+            if ($original && $this->oneDrive !== null) {
+                $photo = $this->oneDrive->photo((int) $_GET['photo']);
+                if ($photo === null) {
+                    http_response_code(404);
+                    return;
+                }
+                $connection = $this->oneDrive->connection();
+                $this->oneDrive->client->stream(
+                    $connection['drive'],
+                    $photo['item'],
+                    $photo['name'],
+                    isset($_GET['download'])
+                );
+                return;
+            }
             $path = $this->imagePath(
                 (int) $_GET['photo'],
                 original: $original,
-                animated: ($_GET['size'] ?? '') === 'display'
+                animated: ($_GET['size'] ?? '') === 'display',
+                generate: false
             );
             if ($path === null) {
                 http_response_code(404);
@@ -1421,7 +1436,7 @@ final class PhotoButler
         $photo->tags = json_decode($row['manual_tags'] ?? $row['ai_tags'], true, flags: JSON_THROW_ON_ERROR);
         $photo->priority = (int) $row['priority'];
         $photo->favorite = $photo->priority === 1;
-        $photo->video = in_array(strtolower(pathinfo($row['path'], PATHINFO_EXTENSION)), self::VIDEO_EXTENSIONS, true);
+        $photo->video = in_array(strtolower(pathinfo($row['name'], PATHINFO_EXTENSION)), self::VIDEO_EXTENSIONS, true);
         $photo->status = $row['status'];
         $photo->width = (int) $row['width'];
         $photo->height = (int) $row['height'];

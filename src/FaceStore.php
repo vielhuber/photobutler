@@ -111,7 +111,7 @@ final class FaceStore
     }
 
     /**
-     * Store a completed attempt only if both disk and index still match its input version.
+     * Store thumbnail analysis only while the catalog still matches its input identity.
      */
     public function save(array $photo, \stdClass $result): bool
     {
@@ -147,7 +147,6 @@ final class FaceStore
                 s.modified AS face_modified, s.bytes AS face_bytes FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.id = ?');
             $query->execute([$photo['id']]);
             $current = $query->fetch();
-            clearstatcache(true, $photo['path']);
             if (
                 !$current ||
                 !$current['available'] ||
@@ -160,15 +159,6 @@ final class FaceStore
                     $current['face_bytes'] === $photo['bytes'])
             ) {
                 return false;
-            }
-            $unchanged =
-                is_file($photo['path']) &&
-                filemtime($photo['path']) === $photo['modified'] &&
-                filesize($photo['path']) === $photo['bytes'];
-            if (!$unchanged) {
-                $result = new \stdClass();
-                $result->status = 'error';
-                $result->faces = [];
             }
             if ($result->status !== 'error') {
                 $old = $this->database->prepare("SELECT * FROM faces WHERE photo_id = ? AND origin = 'manual'");
@@ -241,7 +231,7 @@ final class FaceStore
                 ->database->exec("DELETE FROM persons WHERE name = '' AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = persons.id)
                 AND NOT EXISTS (SELECT 1 FROM person_separations WHERE person_a = persons.id OR person_b = persons.id)");
             $this->database->commit();
-            return $unchanged;
+            return true;
         } finally {
             if ($this->database->inTransaction()) {
                 $this->database->rollBack();

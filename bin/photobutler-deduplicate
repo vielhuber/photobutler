@@ -12,6 +12,7 @@ if (isset($options['help'])) {
 }
 try {
     $library = new \vielhuber\photobutler\PhotoButler((string) ($options['root'] ?? getcwd()));
+    if ($library->oneDrive !== null) { throw new \RuntimeException('Inhaltsbasierte Duplikatprüfung ist für OneDrive-API-Quellen deaktiviert.'); }
     $roots = json_decode($library->getSetting('PHOTO_PATHS'), true, flags: JSON_THROW_ON_ERROR);
     $report = $library->duplicates->clean(
         array_map(fn(string $root): string => rtrim($root, '/'), $roots),

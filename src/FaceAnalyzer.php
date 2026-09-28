@@ -6,45 +6,28 @@ namespace vielhuber\photobutler;
 final class FaceAnalyzer
 {
     /**
-     * Keep the CPU runtime and temporary working images on private storage.
+     * Keep the CPU runtime and thumbnail inputs on private storage.
      */
     public function __construct(private readonly string $dataPath) {}
 
     /**
-     * Analyze an oriented original or a locally rendered static sticker frame.
+     * Analyze only an existing static JPEG or PNG thumbnail, never render or open an original.
      */
     public function analyze(string $source): \stdClass
     {
-        if (in_array(strtolower(pathinfo($source, PATHINFO_EXTENSION)), PhotoButler::VIDEO_EXTENSIONS, true)) {
-            $result = new \stdClass();
-            $result->status = 'unsupported';
-            $result->faces = [];
-            return $result;
+        if (
+            dirname($source) !== $this->dataPath . '/thumbnails' ||
+            strtolower(pathinfo($source, PATHINFO_EXTENSION)) !== 'jpg' ||
+            !is_file($source) ||
+            is_link($source)
+        ) {
+            throw new \RuntimeException('Statisches Thumbnail für Gesichtsanalyse erforderlich.');
         }
         if (!is_executable($this->dataPath . '/face-runtime/bin/python')) {
             throw new \RuntimeException('Lokale Gesichtsanalyse nicht installiert.');
         }
-        $temporary = tempnam($this->dataPath, 'face-');
         $process = null;
         try {
-            $header = file_get_contents($source, false, null, 0, 21);
-            if (
-                str_starts_with($header, "PK\x03\x04") ||
-                (strlen($header) === 21 &&
-                    substr($header, 0, 4) === 'RIFF' &&
-                    substr($header, 8, 8) === 'WEBPVP8X' &&
-                    (ord($header[20]) & 2) !== 0)
-            ) {
-                try {
-                    new StickerRenderer()->render($source, $temporary);
-                } catch (\UnexpectedValueException | \JsonException) {
-                    $result = new \stdClass();
-                    $result->status = 'unsupported';
-                    $result->faces = [];
-                    return $result;
-                }
-                $source = $temporary;
-            }
             $process = proc_open(
                 [
                     $this->dataPath . '/face-runtime/bin/python',
@@ -81,11 +64,6 @@ final class FaceAnalyzer
                     proc_terminate($process, 9);
                 }
                 proc_close($process);
-            }
-            foreach ([$temporary, $temporary . '.webp', $temporary . '.tmp', $temporary . '.webp.tmp'] as $path) {
-                if (is_file($path)) {
-                    unlink($path);
-                }
             }
         }
     }

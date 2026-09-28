@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 require $_composer_autoload_path ?? __DIR__ . '/../vendor/autoload.php';
 
-$options = getopt('', ['root:', 'scan-only', 'tag-only', 'faces-only', 'previews-only', 'regroup-faces', 'limit:', 'scan-limit:', 'help']);
+$options = getopt('', ['root:', 'scan-only', 'tag-only', 'faces-only', 'previews-only', 'regroup-faces', 'onedrive-login', 'limit:', 'scan-limit:', 'help']);
 if (isset($options['help'])) {
-    echo "photobutler-index [--root=/app] [--scan-only|--tag-only|--faces-only|--previews-only|--regroup-faces] [--limit=N] [--scan-limit=N]\nOhne Limit läuft der gewählte Job bis zum Ende. Strg+C beendet ihn nach dem aktuellen Schritt.\n";
+    echo "photobutler-index [--root=/app] [--scan-only|--tag-only|--faces-only|--previews-only|--regroup-faces|--onedrive-login] [--limit=N] [--scan-limit=N]\nOhne Limit läuft der gewählte Job bis zum Ende. Strg+C pausiert den Lauf; laufende OneDrive-Übertragungen werden abgebrochen.\n";
     exit(0);
 }
-if (count(array_intersect(['scan-only', 'tag-only', 'faces-only', 'previews-only', 'regroup-faces'], array_keys($options))) !== 1) {
-    fwrite(STDERR, "Genau einen Job mit --scan-only, --tag-only, --faces-only, --previews-only oder --regroup-faces wählen.\n");
+if (count(array_intersect(['scan-only', 'tag-only', 'faces-only', 'previews-only', 'regroup-faces', 'onedrive-login'], array_keys($options))) !== 1) {
+    fwrite(STDERR, "Genau einen Job mit --scan-only, --tag-only, --faces-only, --previews-only oder --regroup-faces wählen; Anmeldung separat mit --onedrive-login.\n");
     exit(1);
 }
 foreach (['limit', 'scan-limit'] as $option) {
@@ -29,6 +29,12 @@ try {
         throw new \RuntimeException('Projektordner nicht verfügbar.');
     }
     $library = new \vielhuber\photobutler\PhotoButler($root);
+    if (isset($options['onedrive-login'])) {
+        if ($library->oneDrive === null) { throw new \RuntimeException('ONEDRIVE_CLIENT_ID konfigurieren.'); }
+        $library->oneDrive->connect();
+        echo "OneDrive verbunden. Galerie mit --scan-only einlesen.\n";
+        exit(0);
+    }
     if (isset($options['regroup-faces'])) {
         $count = $library->faces->regroup();
         echo "$count doppelte Personengruppen zusammengeführt. Keine Fotos oder KI-Tags neu verarbeitet.\n";
@@ -47,7 +53,9 @@ try {
     if (function_exists('pcntl_async_signals')) {
         pcntl_async_signals(true);
         foreach ([SIGINT, SIGTERM] as $signal) {
-            pcntl_signal($signal, static function (int $signal) use (&$stopped, &$exitCode): void {
+            pcntl_signal($signal, static function (int $signal) use (&$stopped, &$exitCode, $library): void {
+                if (!$stopped) { fwrite(STDERR, "Abbruch angefordert. Lauf wird pausiert.\n"); }
+                if ($library->oneDrive !== null) { $library->oneDrive->client->cancelled = true; }
                 $stopped = true;
                 $exitCode = 128 + $signal;
             });
@@ -63,22 +71,26 @@ try {
             $job,
             $state['token'],
             scanLimit: min(1000, $limit - $processed),
-            previewLimit: min(25, $limit - $processed)
+            previewLimit: $library->oneDrive === null ? min(25, $limit - $processed) : $limit - $processed
         );
         $processed += match ($job) {
             'scan' => $library->scanProgress->checked - ($before['checked'] ?? 0),
             'previews' => $state['completed'] + $state['errors'] - $before['completed'] - $before['errors'],
             default => 1
         };
-        echo $state['percent'] . " % · " . $state['completed'] . "/" . $state['total'] .
-            ($state['estimated'] ? " (geschätzt)" : "") . " · " . $state['errors'] . " Fehler · " . $state['eta'] . "\n";
+        if ($job === 'scan') {
+            $state['checked'] = $library->scanProgress->checked;
+        }
+        $library->jobs->printProgress($job, $state);
     }
-    if ($state['errors'] > 0) {
+    if (!$stopped && $state['errors'] > 0) {
         $exitCode = 1;
     }
+} catch (\vielhuber\photobutler\JobInterrupted) {
+    $exitCode = $exitCode ?: 130;
 } catch (\RuntimeException | \JsonException $exception) {
-    fwrite(STDERR, "photobutler konnte den Lauf nicht abschließen. Läuft der Job bereits? Fotoquellen, Konfiguration und Schreibrechte prüfen.\n");
-    $exitCode = 1;
+    fwrite(STDERR, (($library->oneDrive ?? null) !== null || $exception->getCode() === 412) && $exception instanceof \RuntimeException ? $exception->getMessage() . "\n" : "photobutler konnte den Lauf nicht abschließen. Konfiguration und Schreibrechte prüfen.\n");
+    if (!$stopped) { $exitCode = 1; }
 } finally {
     try {
         if (($state['status'] ?? '') === 'running') {

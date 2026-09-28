@@ -11,7 +11,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     let project = path.resolve(__dirname, '..');
     let root = fs.mkdtempSync(path.join(os.tmpdir(), 'photobutler-gallery-relevance-'));
     let live = process.env.PHOTOBUTLER_GALLERY_LIVE === '1';
-    let url = 'https://photobutler.rebuhleiv.xyz/';
+    let url = 'https://photobutler.vielhuber.dev/';
     let credentials = { username: 'relevance-test', password: 'isolated-relevance-test' };
     let server, browser;
     let php = code =>
@@ -42,6 +42,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                     imagejpeg($image,$root.'/photos/priority-'.$priority.'.jpg');
                 }
                 $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index();
+                $run=$library->jobs->start('previews');
+                while ($run['status'] === 'running') $run=$library->jobs->step('previews', $run['token']);
                 $library->database->exec("UPDATE photos SET priority=CASE name WHEN 'priority--1.jpg' THEN -1 WHEN 'priority-0.jpg' THEN 0 ELSE 1 END");
             `);
             let socket = net.createServer();

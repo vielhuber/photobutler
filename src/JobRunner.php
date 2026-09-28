@@ -5,12 +5,13 @@ namespace vielhuber\photobutler;
 
 final class JobRunner
 {
-    private const PREVIEW_BATCH_SIZE = 25;
+    private const PREVIEW_BATCH_SIZE = 100;
     private const PREVIEW_STEP_SECONDS = 0.25;
+    private const CACHE_PROGRESS_INTERVAL = 5000;
 
     public const LABELS = [
         'scan' => 'Galerie einlesen',
-        'previews' => 'Thumbnails generieren',
+        'previews' => 'Thumbnails downloaden',
         'tag' => 'KI-Tagging',
         'faces' => 'Gesichtertagging'
     ];
@@ -151,6 +152,9 @@ final class JobRunner
             $statement->execute($parameters);
             $state = array_replace($state, $statement->fetch());
         }
+        if ($job === 'scan' && $this->library->oneDrive !== null && $state['status'] === 'running') {
+            $state['estimated'] = 1;
+        }
         $state['percent'] =
             $state['total'] > 0
                 ? min($state['estimated'] ? 99 : 100, (int) floor((100 * $state['completed']) / $state['total']))
@@ -165,11 +169,15 @@ final class JobRunner
             $saved = $this->library->database->query('SELECT state FROM scan_state WHERE id = 1')->fetchColumn();
             $scan = $saved === false ? null : json_decode($saved, flags: JSON_THROW_ON_ERROR);
             $state['checked'] = $scan->progress->checked ?? 0;
-            $state['remaining_files'] = max(0, $state['total'] - $state['checked']);
+            $state['remaining_files'] = max(0, ($state['scan_total'] ?? $state['total']) - $state['checked']);
         }
         $state['eta_seconds'] = null;
         $state['eta'] = 'Noch nicht abschätzbar';
-        if ($state['seconds_per_file'] > 0 && !$state['estimated'] && $state['remaining_files'] > 0) {
+        if (
+            $state['seconds_per_file'] > 0 &&
+            (!$state['estimated'] || ($job === 'scan' && ($state['scan_total'] ?? 0) > 0)) &&
+            $state['remaining_files'] > 0
+        ) {
             $state['eta_seconds'] = max(1, (int) ceil($state['remaining_files'] * $state['seconds_per_file']));
             $minutes = (int) ceil($state['eta_seconds'] / 60);
             $days = intdiv($minutes, 1440);
@@ -200,6 +208,59 @@ final class JobRunner
     }
 
     /**
+     * Show scan work independently of catalog counts and keep batch phases in the same format.
+     */
+    public function printProgress(string $job, ?array $state = null, string $phase = ''): void
+    {
+        if (PHP_SAPI !== 'cli') {
+            return;
+        }
+        $state ??= $this->status($job);
+        $scan = $job === 'scan';
+        $cloud = $scan && $this->library->oneDrive !== null;
+        $done = $state['status'] === 'done';
+        $completed = (int) ($scan ? $state['checked'] ?? $state['total'] : $state['completed']);
+        $total = (int) ($cloud ? $state['scan_total'] : $state['total']);
+        $estimated = $cloud ? !$done : (bool) $state['estimated'];
+        $percent = $done ? 100 : min(99, (int) floor((100 * $completed) / max(1, $total)));
+        $label = match ($state['status']) {
+            'done' => 'Abgeschlossen',
+            'paused' => $scan ? 'Abgleich pausiert' : 'Pausiert',
+            'error' => 'Mit Fehlern beendet',
+            default => $scan ? 'Abgleich läuft' : 'Läuft'
+        };
+        $filled = intdiv($percent, 5);
+        $number = static fn(int $value): string => number_format($value, 0, ',', '.');
+        $line =
+            self::LABELS[$job] .
+            ' · ' .
+            $label .
+            ' · ' .
+            ($estimated ? 'ca. ' : '') .
+            $percent .
+            ' % · ' .
+            $number($completed) .
+            '/' .
+            ($estimated ? 'ca. ' : '') .
+            $number($total) .
+            ($cloud ? ' Metadateneinträge geprüft' : ($scan ? ' Quelldateien geprüft' : ' Fotos'));
+        if ($scan) {
+            $line .=
+                ' · Katalog: ' .
+                $number((int) $state['completed']) .
+                ($cloud ? ' Fotos' : '/' . $number((int) $state['total']));
+        }
+        $line .= ' · ' . $state['errors'] . ' Fehler';
+        if (!$done) {
+            $line .= ' · Restzeit: ' . $state['eta'];
+        }
+        if ($phase !== '') {
+            $line .= ' · ' . $phase;
+        }
+        echo $line . ' [' . str_repeat('=', $filled) . str_repeat('-', 20 - $filled) . "]\n";
+    }
+
+    /**
      * Serialize starts and steps per job without preventing an independent pause.
      */
     private function lock(string $job): mixed
@@ -225,6 +286,19 @@ final class JobRunner
     {
         $lock = $this->lock($job);
         try {
+            if (
+                $job === 'previews' &&
+                $this->library->oneDrive === null &&
+                array_any(
+                    json_decode($this->library->getSetting('PHOTO_PATHS'), true, flags: JSON_THROW_ON_ERROR),
+                    static fn(string $root): bool => preg_match('~^/mnt/[a-z](?:/|$)~i', $root) === 1
+                )
+            ) {
+                throw new \RuntimeException(
+                    'Windows-OneDrive-Downloads sind gesperrt. Zuerst die OneDrive-API einrichten und die Galerie darüber einlesen.',
+                    412
+                );
+            }
             if ($job === 'scan') {
                 $this->log($job, 'Aktualisiere den Gesamtbestand aus den Quellordnern …');
                 $this->library->importProgress(refresh: true);
@@ -412,56 +486,126 @@ final class JobRunner
                 $started = hrtime(true);
                 $cachedCount = 0;
                 $this->log($job, 'Prüfe vorhandene Thumbnails ab Foto ' . ($state['cursor'] + 1) . ' …');
-                $statement = $database->prepare(
-                    'SELECT id FROM photos WHERE available = 1 AND id > ? AND id <= ? ORDER BY id LIMIT ?'
-                );
-                $statement->execute([
-                    $state['cursor'],
-                    $state['maximum'],
-                    max(1, min(self::PREVIEW_BATCH_SIZE, $previewLimit))
-                ]);
-                $ids = $statement->fetchAll(\PDO::FETCH_COLUMN);
-                $statement->closeCursor();
-                for ($offset = 0; $offset < count($ids); ) {
-                    $batch = [(int) $ids[$offset++]];
-                    if (isset($ids[$offset]) && $ids[$offset] % 2 !== $batch[0] % 2) {
-                        $batch[] = (int) $ids[$offset++];
-                    }
-                    if (
-                        $database->query("SELECT status FROM jobs WHERE job = 'previews'")->fetchColumn() !== 'running'
-                    ) {
-                        break;
-                    }
-                    $results = [];
-                    $pending = [];
-                    foreach ($batch as $id) {
-                        $cached = $this->library->imagePath((int) $id, animated: true, cachedOnly: true) !== null;
-                        $results[$id] = $cached;
-                        $cachedCount += (int) $cached;
-                        if (!$cached) {
-                            $pending[] = (int) $id;
+                if ($this->library->oneDrive !== null) {
+                    $sourceLock = fopen($this->dataPath . '/index.lock', 'c');
+                    if ($sourceLock === false || !flock($sourceLock, LOCK_EX | LOCK_NB)) {
+                        if (is_resource($sourceLock)) {
+                            fclose($sourceLock);
                         }
+                        throw new \RuntimeException('Galerieimport läuft. Thumbnail-Job später fortsetzen.');
                     }
-                    if ($pending !== []) {
-                        $this->log($job, 'Erzeuge Thumbnail für Foto ' . implode(', ', $pending) . ' …');
-                        $results = array_replace($results, new PreviewPool($this->dataPath)->render($pending));
-                    }
-                    foreach ($batch as $id) {
-                        if (!$results[$id]) {
-                            $this->log(
-                                $job,
-                                'Foto ' .
-                                    $id .
-                                    ': Thumbnail konnte nicht erstellt werden. Original, Format und Schreibrechte prüfen.'
-                            );
+                    try {
+                        $this->library->oneDrive->connection();
+                        $statement = $database->prepare(
+                            'SELECT p.id, p.path, o.photo_id FROM photos p LEFT JOIN onedrive_photos o ON o.photo_id = p.id
+                            WHERE p.available = 1 AND p.id > ? AND p.id <= ? ORDER BY p.id LIMIT ?'
+                        );
+                        $statement->execute([$state['cursor'], $state['maximum'], max(1, $previewLimit)]);
+                        $ids = [];
+                        $results = [];
+                        $checked = 0;
+                        while ($row = $statement->fetch()) {
+                            if ($this->library->oneDrive->client->cancelled) {
+                                throw new JobInterrupted('Lauf abgebrochen.');
+                            }
+                            if ($row['photo_id'] === null) {
+                                throw new \RuntimeException('Galerie zuerst vollständig über OneDrive einlesen.');
+                            }
+                            $path = $this->dataPath . '/thumbnails/' . hash('sha256', $row['path']) . '.jpg';
+                            $cached = is_file($path) && !is_link($path);
+                            if ($cached) {
+                                $results[$row['id']] = true;
+                                $cachedCount++;
+                            }
+                            if (!$cached) {
+                                $ids[] = (int) $row['id'];
+                            }
+                            $checked++;
+                            if ($checked % self::CACHE_PROGRESS_INTERVAL === 0) {
+                                $this->printProgress(
+                                    $job,
+                                    $state,
+                                    phase: 'Bestandsprüfung: ' . $checked . ' geprüft, ' . $cachedCount . ' vorhanden'
+                                );
+                            }
+                            if (count($ids) === self::PREVIEW_BATCH_SIZE) {
+                                break;
+                            }
                         }
-                        $state['errors'] += (int) !$results[$id];
-                        $state['completed'] += (int) $results[$id];
+                        $statement->closeCursor();
+                        $this->printProgress(
+                            $job,
+                            $state,
+                            phase: 'Bestand geprüft: ' .
+                                $cachedCount .
+                                ' vorhanden, ' .
+                                count($ids) .
+                                ' Downloads im nächsten Batch'
+                        );
+                        if ($ids !== []) {
+                            $results += $this->library->oneDrive->previews($ids);
+                        }
+                        ksort($results, SORT_NUMERIC);
+                    } finally {
+                        flock($sourceLock, LOCK_UN);
+                        fclose($sourceLock);
+                    }
+                    foreach ($results as $id => $success) {
+                        $state['errors'] += (int) !$success;
+                        $state['completed'] += (int) $success;
                         $state['cursor'] = (int) $id;
                         $processed++;
                     }
-                    if ((hrtime(true) - $started) / 1e9 >= self::PREVIEW_STEP_SECONDS) {
-                        break;
+                }
+                if ($this->library->oneDrive === null) {
+                    $statement = $database->prepare(
+                        'SELECT id FROM photos WHERE available = 1 AND id > ? AND id <= ? ORDER BY id LIMIT ?'
+                    );
+                    $statement->execute([$state['cursor'], $state['maximum'], max(1, min(25, $previewLimit))]);
+                    $ids = $statement->fetchAll(\PDO::FETCH_COLUMN);
+                    $statement->closeCursor();
+                    for ($offset = 0; $offset < count($ids); ) {
+                        $batch = [(int) $ids[$offset++]];
+                        if (isset($ids[$offset]) && $ids[$offset] % 2 !== $batch[0] % 2) {
+                            $batch[] = (int) $ids[$offset++];
+                        }
+                        if (
+                            $database->query("SELECT status FROM jobs WHERE job = 'previews'")->fetchColumn() !==
+                            'running'
+                        ) {
+                            break;
+                        }
+                        $results = [];
+                        $pending = [];
+                        foreach ($batch as $id) {
+                            $cached = $this->library->imagePath((int) $id, cachedOnly: true) !== null;
+                            $results[$id] = $cached;
+                            $cachedCount += (int) $cached;
+                            if (!$cached) {
+                                $pending[] = (int) $id;
+                            }
+                        }
+                        if ($pending !== []) {
+                            $this->log($job, 'Erzeuge Thumbnail für Foto ' . implode(', ', $pending) . ' …');
+                            $results = array_replace($results, new PreviewPool($this->dataPath)->render($pending));
+                        }
+                        foreach ($batch as $id) {
+                            if (!$results[$id]) {
+                                $this->log(
+                                    $job,
+                                    'Foto ' .
+                                        $id .
+                                        ': Thumbnail konnte nicht erstellt werden. Original, Format und Schreibrechte prüfen.'
+                                );
+                            }
+                            $state['errors'] += (int) !$results[$id];
+                            $state['completed'] += (int) $results[$id];
+                            $state['cursor'] = (int) $id;
+                            $processed++;
+                        }
+                        if ((hrtime(true) - $started) / 1e9 >= self::PREVIEW_STEP_SECONDS) {
+                            break;
+                        }
                     }
                 }
                 $statement = $database->prepare(
@@ -472,7 +616,14 @@ final class JobRunner
                 $statement->closeCursor();
                 $more = $remaining > 0;
                 $state['total'] = $state['completed'] + $state['errors'] + $remaining;
-                $this->log($job, $processed . ' Fotos geprüft, ' . $cachedCount . ' vorhandene Thumbnails übernommen.');
+                $this->log(
+                    $job,
+                    $processed .
+                        ' Fotos geprüft.' .
+                        ($this->library->oneDrive === null
+                            ? ' ' . $cachedCount . ' vorhandene Thumbnails übernommen.'
+                            : '')
+                );
             }
             $database
                 ->prepare(
@@ -495,8 +646,9 @@ final class JobRunner
                     $job,
                     $token
                 ]);
-            if ($processed > 0) {
-                $secondsPerFile = (hrtime(true) - $timingStarted) / 1e9 / $processed;
+            $timedProcessed = $job === 'previews' && $this->library->oneDrive !== null ? count($ids) : $processed;
+            if ($timedProcessed > 0) {
+                $secondsPerFile = (hrtime(true) - $timingStarted) / 1e9 / $timedProcessed;
                 $database
                     ->prepare(
                         'INSERT INTO job_timings (job, seconds_per_file) VALUES (?, ?)
@@ -519,6 +671,9 @@ final class JobRunner
                 );
             }
             return $this->status($job);
+        } catch (JobInterrupted $exception) {
+            $this->pause($job);
+            throw $exception;
         } catch (\RuntimeException | \JsonException $exception) {
             $this->pause($job);
             $this->log(

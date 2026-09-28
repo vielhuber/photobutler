@@ -11,7 +11,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     let project = path.resolve(__dirname, '..');
     let root = fs.mkdtempSync(path.join(os.tmpdir(), 'photobutler-auth-browser-'));
     let live = process.env.PHOTOBUTLER_AUTH_LIVE === '1';
-    let url = 'https://photobutler.rebuhleiv.xyz/';
+    let url = 'https://photobutler.vielhuber.dev/';
     let credentials = { username: 'auth-browser', password: 'isolated-browser-password' };
     let server;
     let context;
@@ -106,6 +106,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         await page.getByRole('button', { name: 'Anmelden' }).click();
         await page.waitForSelector('.job-card');
         assert.equal(await page.locator('.job-card').count(), 4);
+        assert.equal(await page.locator('[data-job="previews"] h2').textContent(), 'Thumbnails downloaden');
         let cookie = (await context.cookies(url)).find(cookie => cookie.name === 'photobutler_remember');
         assert.ok(cookie, 'Persistent cookie issued by running application');
         assert.ok(/^[a-f0-9]{64}$/.test(cookie.value));
@@ -140,7 +141,13 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         assert.ok((await context.cookies(url)).find(item => item.name === cookie.name).expires === cookie.expires);
         await page.setViewportSize({ width: 390, height: 844 });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-        assert.equal(await page.locator('[data-job-action="start"]:visible').count(), 4);
+        assert.equal(await page.locator('[data-job-action="start"], [data-job-action="pause"]').count(), 0);
+        assert.equal(await page.locator('.job-command:visible').count(), 4);
+        assert.equal(await page.locator('[data-job="previews"] h2').textContent(), 'Thumbnails downloaden');
+        for (let [index, job] of ['scan', 'previews', 'tag', 'faces'].entries()) {
+            assert.match(await page.locator('.job-command code').nth(index).textContent(), new RegExp(`--${job}-only`));
+        }
+        assert.equal(await page.locator('[data-job-action="reset"]:visible').count(), 4);
         if (!live && process.env.PHOTOBUTLER_BROWSER_ARTIFACTS)
             await page.screenshot({
                 path: process.env.PHOTOBUTLER_BROWSER_ARTIFACTS + '/auth-mobile.png',

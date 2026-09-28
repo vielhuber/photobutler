@@ -20,7 +20,7 @@ final class DuplicateStore
     }
 
     /**
-     * Read originals only during import or explicit cleanup, reusing unchanged fingerprints.
+     * Read originals only during explicit cleanup, reusing unchanged fingerprints.
      */
     public function fingerprint(string $path, int $modified, int $bytes): string
     {
@@ -64,58 +64,6 @@ final class DuplicateStore
             ->prepare('INSERT OR REPLACE INTO photo_hashes VALUES (?, ?, ?, ?)')
             ->execute([$path, $modified, $bytes, $digest]);
         return $digest;
-    }
-
-    /**
-     * Resolve the oldest retained identity, including identities protected by a catalog reset.
-     */
-    public function canonical(string $path, string $digest, int $bytes, array $roots): ?array
-    {
-        $statement = $this->database->prepare('SELECT p.* FROM (
-            SELECT id,path,modified,bytes,manual_tags,priority FROM photos
-            UNION ALL SELECT id,path,modified,bytes,manual_tags,priority FROM photo_metadata m
-            WHERE NOT EXISTS (SELECT 1 FROM photos p WHERE p.id = m.id)
-            ) p LEFT JOIN photo_duplicates d ON d.path = p.path
-            LEFT JOIN photo_hashes h ON h.path = p.path AND h.modified = p.modified AND h.bytes = p.bytes
-            WHERE p.bytes = ? AND p.path <> ? AND d.path IS NULL AND (h.digest IS NULL OR h.digest = ?) ORDER BY p.id');
-        $statement->execute([$bytes, $path, $digest]);
-        foreach ($statement->fetchAll() as $candidate) {
-            if (
-                in_array(
-                    strtolower(pathinfo($candidate['path'], PATHINFO_EXTENSION)),
-                    PhotoButler::VIDEO_EXTENSIONS,
-                    true
-                ) ||
-                !array_any($roots, fn(string $root): bool => str_starts_with($candidate['path'], $root . '/'))
-            ) {
-                continue;
-            }
-            clearstatcache(true, $candidate['path']);
-            if (!is_file($candidate['path'])) {
-                $directory = dirname($candidate['path']);
-                if (is_readable($directory) && is_dir($directory)) {
-                    $entries = scandir($directory);
-                    if ($entries !== false && !in_array(basename($candidate['path']), $entries, true)) {
-                        continue;
-                    }
-                }
-                throw new \RuntimeException('Möglicher Duplikatpartner nicht verfügbar. Import bleibt wiederholbar.');
-            }
-            if (realpath($candidate['path']) !== $candidate['path']) {
-                throw new \RuntimeException('Duplikatpartner ist kein verfügbarer kanonischer Quellpfad.');
-            }
-            if (
-                filemtime($candidate['path']) !== $candidate['modified'] ||
-                filesize($candidate['path']) !== $candidate['bytes']
-            ) {
-                continue;
-            }
-            $known = $this->fingerprint($candidate['path'], $candidate['modified'], $candidate['bytes']);
-            if ($known === $digest) {
-                return $candidate;
-            }
-        }
-        return null;
     }
 
     /**

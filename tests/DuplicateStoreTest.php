@@ -38,17 +38,17 @@ final class DuplicateStoreTest extends TestCase
         rmdir($this->root);
     }
 
-    public function testImportSuppressesCopiesAcrossRestartAndCatalogReset(): void
+    public function testImportKeepsDifferentPathsAcrossRestartAndCatalogReset(): void
     {
         copy($this->root . '/photos/a.jpg', $this->root . '/photos/b.jpg');
         $original = hash_file('sha256', $this->root . '/photos/a.jpg');
-        $this->assertSame(1, $this->library->index());
-        $this->assertSame(1, (int) $this->library->database->query('SELECT COUNT(*) FROM photos')->fetchColumn());
+        $this->assertSame(2, $this->library->index());
+        $this->assertSame(2, (int) $this->library->database->query('SELECT COUNT(*) FROM photos')->fetchColumn());
         $this->assertSame(2, (int) $this->library->importProgress(true)['completed']);
         $this->library = new PhotoButler($this->root);
         $this->assertSame(0, $this->library->index());
         $this->library->jobs->reset('scan');
-        $this->assertSame(1, $this->library->index());
+        $this->assertSame(2, $this->library->index());
         $this->assertSame(1, (int) $this->library->database->query('SELECT id FROM photos')->fetchColumn());
         $this->assertSame($original, hash_file('sha256', $this->root . '/photos/b.jpg'));
     }
@@ -81,8 +81,8 @@ final class DuplicateStoreTest extends TestCase
             hash_file('sha256', $this->root . '/photos/b.jpg')
         );
         $this->library = new PhotoButler($this->root);
-        $this->assertSame(0, $this->library->index());
-        $this->assertSame(0, $store->clean([$this->root . '/photos'], true)['removed']);
+        $this->assertSame(1, $this->library->index());
+        $this->assertSame(1, $store->clean([$this->root . '/photos'], true)['removed']);
     }
 
     public function testConflictingRatingsAndFaceMetadataPreventAnyDeletion(): void
@@ -101,15 +101,15 @@ final class DuplicateStoreTest extends TestCase
         $this->assertSame(1, (int) $this->library->database->query('SELECT COUNT(*) FROM face_state')->fetchColumn());
     }
 
-    public function testOldUnhashedCatalogRejectsNewCopyAndChangedCopyBecomesIndependent(): void
+    public function testOldUnhashedCatalogAcceptsNewPathsAndReusesKnownPaths(): void
     {
         $this->library->index();
         $this->library->database->exec('DELETE FROM photo_hashes');
         copy($this->root . '/photos/a.jpg', $this->root . '/photos/b.jpg');
-        $this->assertSame(0, $this->library->index());
+        $this->assertSame(1, $this->library->index());
         file_put_contents($this->root . '/photos/b.jpg', 'changed', FILE_APPEND);
         clearstatcache();
-        $this->assertSame(1, $this->library->index());
+        $this->assertSame(0, $this->library->index());
         $this->assertSame(
             0,
             (int) $this->library->database->query('SELECT COUNT(*) FROM photo_duplicates')->fetchColumn()
@@ -223,10 +223,10 @@ final class DuplicateStoreTest extends TestCase
         $this->library->duplicates->clean([$this->root . '/photos'], true);
         $this->library->priority(1, 1);
         $this->library->saveTags(1, 'retained');
-        $this->assertSame(0, $this->library->index());
+        $this->assertSame(1, $this->library->index());
         $this->library->jobs->reset('scan');
         $this->library = new PhotoButler($this->root);
-        $this->assertSame(1, $this->library->index());
+        $this->assertSame(2, $this->library->index());
         $this->assertSame(1, $this->library->photo(1)->priority);
         $this->assertSame(
             '["retained"]',
@@ -234,24 +234,19 @@ final class DuplicateStoreTest extends TestCase
         );
     }
 
-    public function testProtectedUnmappedMetadataAndDifferentTagsBlockSuppression(): void
+    public function testProtectedMetadataSurvivesPathOnlyReimport(): void
     {
         $this->seedExistingDuplicate();
         $this->library->saveTags(2, 'different');
         $report = $this->library->duplicates->clean([$this->root . '/photos'], true);
         $this->assertSame(['manual_tags'], $report['conflicts'][0]['fields']);
         $this->library->jobs->reset('scan');
-        try {
-            $this->library->index();
-            $this->fail('Protected metadata must not be discarded.');
-        } catch (RuntimeException $exception) {
-            $this->assertSame(RuntimeException::class, $exception::class);
-            $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM photos')->fetchColumn());
-            $this->assertSame(
-                2,
-                (int) $this->library->database->query('SELECT COUNT(*) FROM photo_metadata')->fetchColumn()
-            );
-        }
+        $this->assertSame(2, $this->library->index());
+        $this->assertSame(['different'], $this->library->photo(2)->tags);
+        $this->assertSame(
+            2,
+            (int) $this->library->database->query('SELECT COUNT(*) FROM photo_metadata')->fetchColumn()
+        );
     }
 
     public function testSameSizeSimilarImagesWithDifferentBytesRemainSeparate(): void
@@ -273,10 +268,10 @@ final class DuplicateStoreTest extends TestCase
         rename($this->root . '/photos/a.jpg', $this->root . '/photos/z.jpg');
         $this->library->index();
         copy($this->root . '/photos/z.jpg', $this->root . '/photos/a.jpg');
-        $this->assertSame(0, $this->library->index());
+        $this->assertSame(1, $this->library->index());
         file_put_contents($this->root . '/photos/z.jpg', 'changed', FILE_APPEND);
         clearstatcache();
-        $this->assertSame(2, $this->library->index());
+        $this->assertSame(0, $this->library->index());
         $this->assertSame(2, (int) $this->library->database->query('SELECT COUNT(*) FROM photos')->fetchColumn());
         $this->assertSame(
             0,
@@ -305,17 +300,12 @@ final class DuplicateStoreTest extends TestCase
         $this->seedExistingDuplicate();
         $this->library->database->exec("INSERT INTO face_state VALUES (2,1,1,'fixture','excluded',0)");
         $this->library->jobs->reset('scan');
-        try {
-            $this->library->index();
-            $this->fail('Face exclusions must not become orphaned.');
-        } catch (RuntimeException $exception) {
-            $this->assertSame(RuntimeException::class, $exception::class);
-            $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM photos')->fetchColumn());
-            $this->assertSame(
-                'excluded',
-                $this->library->database->query('SELECT status FROM face_state')->fetchColumn()
-            );
-        }
+        $this->assertSame(2, $this->library->index());
+        $this->assertSame(
+            'excluded',
+            $this->library->database->query('SELECT status FROM face_state WHERE photo_id = 2')->fetchColumn()
+        );
+        $this->assertNotNull($this->library->photo(2));
     }
 
     public function testCliAuditsBeforeApplyingAndLeavesJobsStopped(): void

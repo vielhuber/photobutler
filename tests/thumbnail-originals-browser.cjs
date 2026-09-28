@@ -11,6 +11,10 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     let project = path.resolve(__dirname, '..');
     let root = fs.mkdtempSync(path.join(os.tmpdir(), 'photobutler-originals-'));
     let server, browser;
+    let runPreviews = () =>
+        execFileSync('php', [project + '/bin/photobutler-index', '--root=' + root, '--previews-only'], {
+            encoding: 'utf8'
+        });
     let php = code =>
         execFileSync(
             'php',
@@ -68,15 +72,19 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             'tag',
             'faces'
         ]);
-        assert.equal(await page.locator('[data-job="previews"] h2').textContent(), 'Thumbnails generieren');
+        assert.equal(await page.locator('[data-job="previews"] h2').textContent(), 'Thumbnails downloaden');
         assert.equal(actions.length, 0);
-        await page.locator('[data-job="previews"] [data-job-action="start"]').click();
+        assert.equal(await page.locator('[data-job-action="start"], [data-job-action="pause"]').count(), 0);
+        runPreviews();
         await page.waitForFunction(
             () =>
                 document.querySelector('[data-job="previews"] [data-job-status]').textContent ===
                 '100 % · Abgeschlossen'
         );
         assert.match(await page.locator('[data-job="previews"] [data-job-count]').textContent(), /^3 \/ 3 · 0 Fehler$/);
+        php(
+            `$library=new \\vielhuber\\photobutler\\PhotoButler($root); $id=(int)$library->database->query("SELECT id FROM photos WHERE name='photo.jpg'")->fetchColumn(); imagepng(imagecreatetruecolor(533,800),$library->imagePath($id,cachedOnly:true));`
+        );
         let cache = Object.fromEntries(
             fs
                 .readdirSync(root + '/.data/thumbnails')
@@ -119,6 +127,14 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                         path: process.env.PHOTOBUTLER_BROWSER_ARTIFACTS + '/original-' + name + '-' + row.name + '.png',
                         fullPage: true
                     });
+                if (row.name === 'photo.jpg') {
+                    let preview = await page.request.get(url + `?photo=${row.id}`);
+                    assert.equal(preview.status(), 200);
+                    assert.equal(preview.headers()['content-type'], 'image/png');
+                    let $preview = page.locator(`img[src="?photo=${row.id}&size=display"]`).first();
+                    await $preview.evaluate(image => image.decode());
+                    assert.equal(await $preview.evaluate(image => image.naturalWidth), 533);
+                }
                 let sourceUrl = url + `?photo=${row.id}&size=original`;
                 let original = await page.request.get(sourceUrl);
                 assert.deepEqual(await original.body(), originals[row.name]);
@@ -145,12 +161,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         await page.goto(url + '?view=jobs');
         await page.waitForSelector('[data-job="previews"]');
         assert.equal(actions.length, before);
-        let finished = page.waitForResponse(
-            async response =>
-                response.request().postData()?.includes('job-step') && (await response.json()).status === 'done'
-        );
-        await page.locator('[data-job="previews"] [data-job-action="start"]').click();
-        await finished;
+        runPreviews();
+        assert.equal(actions.length, before);
         await page.waitForFunction(
             () =>
                 document.querySelector('[data-job="previews"] [data-job-status]').textContent ===

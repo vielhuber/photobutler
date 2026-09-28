@@ -836,6 +836,68 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(1, $this->library->jobs->all()['tag']['errors']);
     }
 
+    public function testCliRescanReportsCheckedFilesSeparatelyFromTheCompleteCatalog(): void
+    {
+        foreach (['Second', 'Third'] as $name) {
+            $this->copyDistinctPhoto(
+                $this->root . '/photos/Urlaub/Meer.jpg',
+                $this->root . '/photos/Urlaub/' . $name . '.jpg'
+            );
+        }
+        file_put_contents($this->root . '/photos/Urlaub/zz.txt', 'not an imported photo');
+        $this->library->index();
+        $run = function (array $arguments): string {
+            $process = proc_open(
+                [
+                    PHP_BINARY,
+                    dirname(__DIR__) . '/bin/photobutler-index',
+                    '--root=' . $this->root,
+                    '--scan-only',
+                    ...$arguments
+                ],
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes
+            );
+            $output = stream_get_contents($pipes[1]);
+            $errors = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $this->assertSame(0, proc_close($process), $errors);
+            return $output;
+        };
+        foreach ([1 => 33, 2 => 66, 3 => 99] as $checked => $percent) {
+            $output = $run(['--scan-limit=1']);
+            $this->assertStringContainsString(
+                'Galerie einlesen · Abgleich läuft · ' .
+                    $percent .
+                    ' % · ' .
+                    $checked .
+                    '/3 Quelldateien geprüft · Katalog: 3/3',
+                $output
+            );
+            $this->assertStringContainsString('Restzeit:', $output);
+            $this->assertStringContainsString('Pausiert.', $output);
+            $this->assertStringNotContainsString('100 %', $output);
+            $state = $this->library->jobs->all()['scan'];
+            $this->assertSame(100, $state['percent']);
+            $this->assertSame($checked, $state['checked']);
+            $this->assertSame('paused', $state['status']);
+        }
+        $output = $run([]);
+        $this->assertStringContainsString(
+            'Galerie einlesen · Abgeschlossen · 100 % · 3/3 Quelldateien geprüft · Katalog: 3/3',
+            $output
+        );
+        $this->assertStringNotContainsString('Restzeit:', $output);
+        $this->assertSame('done', $this->library->jobs->all()['scan']['status']);
+        foreach (glob($this->root . '/photos/Urlaub/*') as $photo) {
+            unlink($photo);
+        }
+        $output = $run([]);
+        $this->assertStringContainsString('Abgeschlossen · 100 % · 0/0 Quelldateien geprüft · Katalog: 0/0', $output);
+        $this->assertStringNotContainsString('Restzeit:', $output);
+    }
+
     public function testFilteredPhotoCountsIncludeEveryPageAndUseTheListingFilters(): void
     {
         $this->library->index();
@@ -930,8 +992,8 @@ final class PhotoButlerTest extends TestCase
         imagejpeg(imagecreatetruecolor(64, 64), $source);
         clearstatcache();
         $this->library->index();
-        $this->assertFileDoesNotExist($animation);
-        $this->assertSame($this->library->imagePath($id), $this->library->imagePath($id, animated: true));
+        $this->assertFileExists($animation);
+        $this->assertSame($animation, $this->library->imagePath($id, animated: true));
     }
 
     public function testAnimatedWebpGetsAnAiPreviewAndKeepsPlaying(): void
@@ -1319,17 +1381,18 @@ final class PhotoButlerTest extends TestCase
         $this->assertCount(0, $this->library->photos());
     }
 
-    public function testChangedFileIsQueuedAgainWithoutLosingManualTags(): void
+    public function testKnownPathKeepsAnalysisAndManualTagsWhenSourceMetadataChanges(): void
     {
         $this->library->index();
         $id = $this->library->photos()[0]->id;
         $this->library->saveTags($id, 'Familie');
         $this->library->favorite($id, true);
+        $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Meer\"]'");
         touch($this->root . '/photos/Urlaub/Meer.jpg', time() + 10);
-        $this->library->index();
+        $this->assertSame(0, $this->library->index());
         $this->assertSame(['Familie'], $this->library->photo($id)->tags);
         $this->assertTrue($this->library->photo($id)->favorite);
-        $this->assertSame('pending', $this->library->photo($id)->status);
+        $this->assertSame('done', $this->library->photo($id)->status);
     }
 
     public function testAiResultRejectsMalformedAndOversizedTags(): void
@@ -1458,7 +1521,7 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(1920, $this->library->photo($id)->width);
     }
 
-    public function testThumbnailIsBoundedCachedAndInvalidatedWithoutChangingOriginal(): void
+    public function testThumbnailIsBoundedAndReusedByPathWithoutChangingOriginal(): void
     {
         $source = $this->root . '/photos/Urlaub/Meer.jpg';
         $image = imagecreatetruecolor(2400, 1600);
@@ -1489,8 +1552,8 @@ final class PhotoButlerTest extends TestCase
         touch($source, time() + 2);
         clearstatcache();
         $this->library->index();
-        $this->assertFileDoesNotExist($thumbnail);
-        $this->assertSame([100, 60], array_slice(getimagesize($this->library->imagePath($id)), 0, 2));
+        $this->assertFileExists($thumbnail);
+        $this->assertSame([640, 427], array_slice(getimagesize($this->library->imagePath($id)), 0, 2));
         $this->assertSame([], glob($this->root . '/.data/thumbnails/*.tmp'));
     }
 
@@ -1519,7 +1582,7 @@ final class PhotoButlerTest extends TestCase
         touch($source, time() + 2);
         clearstatcache();
         $this->library->index();
-        $this->assertFileDoesNotExist($thumbnail);
+        $this->assertFileExists($thumbnail);
         $this->assertSame('legacy medium fixture', file_get_contents($legacy));
         $this->assertSame([640, 480], array_slice(getimagesize($this->library->imagePath($id)), 0, 2));
         $this->assertSame([$legacy], glob($this->root . '/.data/thumbnails/*.detail*'));
@@ -1775,6 +1838,7 @@ final class PhotoButlerTest extends TestCase
             clearstatcache();
             $this->library->index();
             $id = $this->library->photos()[0]->id;
+            $this->library->jobs->reset('previews');
             $thumbnail = $this->library->imagePath($id);
             $size = $orientation >= 5 ? [480, 640] : [640, 480];
             $this->assertSame($size, array_slice(getimagesize($thumbnail), 0, 2));
@@ -1822,6 +1886,7 @@ final class PhotoButlerTest extends TestCase
             touch($source, 1234567890 + $width);
             clearstatcache();
             $this->library->index();
+            $this->library->jobs->reset('previews');
             $run = $this->library->jobs->start('previews');
             $state = $this->library->jobs->step('previews', $run['token']);
             $this->assertSame('done', $state['status']);
@@ -2105,7 +2170,7 @@ final class PhotoButlerTest extends TestCase
             $document = \Dom\HTMLDocument::createFromString($body, LIBXML_NOERROR);
             $this->assertSame(4, $document->querySelectorAll('[data-job]')->length);
             $this->assertSame(
-                ['Galerie einlesen', 'Thumbnails generieren', 'KI-Tagging', 'Gesichtertagging'],
+                ['Galerie einlesen', 'Thumbnails downloaden', 'KI-Tagging', 'Gesichtertagging'],
                 array_map(
                     fn($heading): string => $heading->textContent,
                     iterator_to_array($document->querySelectorAll('[data-job] h2'))
@@ -2125,6 +2190,10 @@ final class PhotoButlerTest extends TestCase
                 $this->assertStringContainsString('--root=' . escapeshellarg($this->root), $command);
                 $this->assertStringEndsWith('--' . $job . '-only', $command);
             }
+            $this->assertSame(404, $request('?photo=' . $id . '&size=thumb')[0]);
+            $this->assertNull($this->library->imagePath($id, cachedOnly: true));
+            $run = $this->library->jobs->start('previews');
+            $this->assertSame('done', $this->library->jobs->step('previews', $run['token'])['status']);
             $this->assertSame(200, $request('?photo=' . $id . '&size=thumb')[0]);
             $etags = [];
             foreach (['thumb', 'display', 'detail', 'original'] as $size) {
@@ -2155,6 +2224,11 @@ final class PhotoButlerTest extends TestCase
                     '?photo=' . $id . '&size=' . $size,
                     headers: ['If-None-Match: ' . $etag]
                 );
+                if (in_array($size, ['thumb', 'display'], true)) {
+                    $this->assertSame(304, $status);
+                    $this->assertSame($etag, $headers['etag']);
+                    continue;
+                }
                 $this->assertSame(200, $status);
                 $this->assertNotSame($etag, $headers['etag']);
             }
