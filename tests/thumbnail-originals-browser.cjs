@@ -178,9 +178,44 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         );
         for (let [name, data] of Object.entries(originals))
             assert.deepEqual(fs.readFileSync(root + '/photos/' + name), data);
+        let fallbackId = Number(
+            php(`file_put_contents($root.'/.data/.env', "\\nONEDRIVE_CLIENT_ID=fixture\\nONEDRIVE_FOLDER=FOTOS\\n", FILE_APPEND);
+            file_put_contents($root.'/.data/onedrive-source.json', json_encode(['drive'=>'drive','folder'=>'root','folder_path'=>'FOTOS','client_id'=>'fixture']));
+            $library=new \\vielhuber\\photobutler\\PhotoButler($root);
+            foreach($library->database->query('SELECT id,name FROM photos')->fetchAll() as $row) {
+                $library->database->prepare('INSERT INTO onedrive_photos VALUES(?,?,?,?)')->execute([$row['id'],(string)$row['id'],'c:v1',$row['name']]);
+                if($row['name']==='photo.jpg') {$id=(int)$row['id'];}
+            }
+            unlink($library->imagePath($id,cachedOnly:true));
+            $library->database->prepare('INSERT INTO onedrive_preview_fallbacks VALUES(?,?)')->execute([$id,'c:v1']); echo $id;`)
+        );
+        for (let [width, height] of [
+            [1440, 1000],
+            [390, 844]
+        ]) {
+            await page.setViewportSize({ width, height });
+            await page.goto(url + '?relevance=all');
+            let $fallback = page.locator(`img[src="?photo=${fallbackId}&size=display"]`).first();
+            await $fallback.evaluate(image => image.decode());
+            assert.ok(await $fallback.evaluate(image => image.naturalWidth > 0));
+            let response = await page.request.get(url + `?photo=${fallbackId}`);
+            assert.equal(response.status(), 200);
+            assert.equal(response.headers()['content-type'], 'image/svg+xml');
+            assert.deepEqual(await response.body(), fs.readFileSync(project + '/assets/favicon.svg'));
+            assert.equal(
+                (
+                    await page.request.get(url + `?photo=${fallbackId}`, {
+                        headers: { 'If-None-Match': response.headers().etag }
+                    })
+                ).status(),
+                304
+            );
+            await page.reload();
+            await $fallback.evaluate(image => image.decode());
+        }
         assert.deepEqual(errors, []);
         console.log(
-            'PASS: thumbnail-only job, both animated sticker formats, order, original popup dimensions/bytes, sticker fallback, desktop/mobile/reload, original and legacy HTTP sources, authenticated 304, downloads and warm cache. URL: ' +
+            'PASS: thumbnail-only job, both animated sticker formats, order, original popup dimensions/bytes, sticker fallback, desktop/mobile/reload, original and legacy HTTP sources, authenticated 304, downloads, warm cache and persistent fallback icons. URL: ' +
                 url
         );
     } finally {

@@ -16,6 +16,7 @@ final class OneDriveSource
         $library->database->exec("CREATE TABLE IF NOT EXISTS onedrive_items (id TEXT PRIMARY KEY, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS onedrive_pending (id TEXT PRIMARY KEY, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS onedrive_state (id INTEGER PRIMARY KEY CHECK(id=1), scope TEXT NOT NULL, delta TEXT, next TEXT, checked INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS onedrive_preview_fallbacks (photo_id INTEGER PRIMARY KEY, version TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS onedrive_photos (photo_id INTEGER PRIMARY KEY, item TEXT NOT NULL UNIQUE, version TEXT NOT NULL, relative_path TEXT NOT NULL);");
     }
 
@@ -345,6 +346,7 @@ final class OneDriveSource
                             $priority
                         ]);
                     if ($changed) {
+                        $database->prepare('DELETE FROM onedrive_preview_fallbacks WHERE photo_id=?')->execute([$id]);
                         $database
                             ->prepare(
                                 "UPDATE photos SET width=0,height=0,taken=?,status='pending',ai_tags='[]',description='',attempted=0 WHERE id=?"
@@ -388,7 +390,8 @@ final class OneDriveSource
     {
         $this->connection();
         $statement = $this->library->database->prepare(
-            'SELECT p.*,o.item,o.version FROM photos p JOIN onedrive_photos o ON o.photo_id=p.id WHERE p.id=? AND p.available=1'
+            'SELECT p.*,o.item,o.version,f.photo_id AS preview_fallback FROM photos p JOIN onedrive_photos o ON o.photo_id=p.id
+             LEFT JOIN onedrive_preview_fallbacks f ON f.photo_id=p.id AND f.version=o.version WHERE p.id=? AND p.available=1'
         );
         $statement->execute([$id]);
         return $statement->fetch() ?: null;
@@ -408,7 +411,10 @@ final class OneDriveSource
             if ($photo === null) {
                 throw new \RuntimeException('Galerie zuerst vollständig über OneDrive einlesen.');
             }
-            if ($this->library->imagePath((int) $id, cachedOnly: true) !== null) {
+            if (
+                $photo['preview_fallback'] !== null ||
+                $this->library->imagePath((int) $id, cachedOnly: true) !== null
+            ) {
                 $results[$id] = true;
                 continue;
             }
@@ -441,12 +447,21 @@ final class OneDriveSource
                         usleep(50000);
                     }
                 }
-                $this->client->thumbnails($connection['drive'], $pending, function (int $id, bool $saved) use (
+                $this->client->thumbnails($connection['drive'], $pending, function (int $id, ?bool $saved) use (
                     &$results,
-                    $ids
+                    $ids,
+                    $pending
                 ): void {
-                    $results[$id] = $saved;
-                    if (!$saved) {
+                    if ($saved === null) {
+                        $this->library->database
+                            ->prepare(
+                                'INSERT INTO onedrive_preview_fallbacks(photo_id,version) VALUES(?,?) ON CONFLICT(photo_id) DO UPDATE SET version=excluded.version'
+                            )
+                            ->execute([$id, $pending[$id]['version']]);
+                        $this->library->jobs->log('previews', 'Foto ' . $id . ': Allgemeines Vorschaubild hinterlegt.');
+                    }
+                    $results[$id] = $saved !== false;
+                    if ($saved === false) {
                         $message = 'Foto ' . $id . ': Keine gültige OneDrive-Vorschau verfügbar; übersprungen.';
                         $this->library->jobs->log('previews', $message);
                         if (PHP_SAPI === 'cli') {

@@ -204,16 +204,25 @@ class OneDriveClient
     }
 
     /**
-     * Save the provider's JPEG or PNG preview atomically, never downloading the original.
+     * Save the provider's preview atomically; null means no preview is available, false means a failure.
      */
-    public function thumbnail(string $drive, string $item, string $target, int $bytes, string $version): bool
+    public function thumbnail(string $drive, string $item, string $target, int $bytes, string $version): ?bool
     {
         $metadata = $this->get('/drives/' . rawurlencode($drive) . '/items/' . rawurlencode($item));
         $this->validateVersion($metadata, $bytes, $version);
-        $thumbnails = $this->get('/drives/' . rawurlencode($drive) . '/items/' . rawurlencode($item) . '/thumbnails');
+        try {
+            $thumbnails = $this->get(
+                '/drives/' . rawurlencode($drive) . '/items/' . rawurlencode($item) . '/thumbnails'
+            );
+        } catch (\RuntimeException $exception) {
+            if ($exception->getCode() === 406) {
+                return null;
+            }
+            throw $exception;
+        }
         $url = $thumbnails['value'][0]['large']['url'] ?? null;
         if (!is_string($url) || $url === '') {
-            return false;
+            return null;
         }
         $response = $this->thumbnailTransfers([0 => $url])[0];
         return $this->saveThumbnail($response, $target);
@@ -238,7 +247,7 @@ class OneDriveClient
      * Batch twenty metadata requests and fetch at most four signed previews concurrently.
      *
      * @param array<int, array{item: string, target: string, bytes: int, version: string}> $photos
-     * @return array<int, bool>
+     * @return array<int, bool|null>
      */
     public function thumbnails(string $drive, array $photos, ?callable $progress = null): array
     {
@@ -314,9 +323,12 @@ class OneDriveClient
                     !is_string($url) ||
                     $url === ''
                 ) {
-                    $results[$id] = false;
+                    $results[$id] =
+                        (int) $metadata['status'] === 200 && in_array((int) $thumbnail['status'], [200, 406], true)
+                            ? null
+                            : false;
                     if ($progress !== null) {
-                        $progress($id, false);
+                        $progress($id, $results[$id]);
                     }
                     continue;
                 }
@@ -455,10 +467,13 @@ class OneDriveClient
     }
 
     /**
-     * Persist only a decoded JPEG; interrupted writes never replace a complete cache entry.
+     * Distinguish unavailable previews from failures; only decoded JPEG/PNG data enters the cache.
      */
-    private function saveThumbnail(array $response, string $target): bool
+    private function saveThumbnail(array $response, string $target): ?bool
     {
+        if ($response['status'] === 406) {
+            return null;
+        }
         if ($response['status'] !== 200) {
             return false;
         }

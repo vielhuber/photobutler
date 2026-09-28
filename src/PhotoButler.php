@@ -622,6 +622,9 @@ final class PhotoButler
         if (!$original && $animated && is_file($path . '.webp') && !is_link($path . '.webp')) {
             return $path . '.webp';
         }
+        if (!$original && !$cachedOnly && !is_file($path) && ($remote['preview_fallback'] ?? null) !== null) {
+            return dirname(__DIR__) . '/assets/favicon.svg';
+        }
         return is_file($path) ? $path : null;
     }
 

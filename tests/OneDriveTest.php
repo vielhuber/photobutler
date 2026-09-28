@@ -45,14 +45,14 @@ final class FixtureOneDriveClient extends OneDriveClient
         return $results;
     }
 
-    public function thumbnail(string $drive, string $item, string $target, int $bytes, string $version): bool
+    public function thumbnail(string $drive, string $item, string $target, int $bytes, string $version): ?bool
     {
         $this->downloads[] = $item;
         if ($this->failDownload === count($this->downloads)) {
             throw new RuntimeException('Fixture transfer interrupted');
         }
         if (in_array($item, $this->missingThumbnails, true)) {
-            return false;
+            return null;
         }
         file_put_contents($target, $this->jpeg);
         return true;
@@ -336,6 +336,23 @@ final class OneDriveTest extends TestCase
         );
     }
 
+    public function testDeletedFileLeavesTheGalleryWithoutDeletingItsMetadata(): void
+    {
+        $this->index([$this->item('a', 'deleted.mov')]);
+        $this->library->saveTags(1, 'Keep');
+        $this->index([['id' => 'a', 'deleted' => []]]);
+        $this->assertNull($this->library->photo(1));
+        $this->assertSame(0, $this->library->photoCount());
+        $this->assertSame(
+            0,
+            (int) $this->library->database->query('SELECT available FROM photos WHERE id=1')->fetchColumn()
+        );
+        $this->assertSame(
+            '["Keep"]',
+            $this->library->database->query('SELECT manual_tags FROM photos WHERE id=1')->fetchColumn()
+        );
+    }
+
     public function testExpiredDeltaRestartsMetadataOnlyAndPreservesCatalog(): void
     {
         $this->index([$this->item('a')]);
@@ -483,25 +500,40 @@ final class OneDriveTest extends TestCase
         }
     }
 
-    public function testMissingProviderThumbnailsAreCountedAndDoNotStopFollowingFiles(): void
+    public function testUnavailablePreviewsPersistAsSuccessfulFallbacksWithoutRepeatDownloads(): void
     {
         $this->index([$this->item('a'), $this->item('b'), $this->item('c')]);
         $this->client->missingThumbnails = ['b'];
-        $run = $this->library->jobs->start('previews');
         ob_start();
         try {
-            $run = $this->library->jobs->step('previews', $run['token']);
-            $this->assertSame(['a', 'b', 'c'], $this->client->downloads);
-            $this->assertSame(2, $run['completed']);
-            $this->assertSame(1, $run['errors']);
-            $this->assertSame(3, $run['cursor']);
-            $this->assertSame('error', $run['status']);
+            foreach (range(1, 2) as $attempt) {
+                $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
+                $run = $this->library->jobs->start('previews');
+                $run = $this->library->jobs->step('previews', $run['token']);
+                $this->assertSame(['a', 'b', 'c'], $this->client->downloads);
+                $this->assertSame(3, $run['completed']);
+                $this->assertSame(0, $run['errors']);
+                $this->assertSame('done', $run['status']);
+                $this->assertSame('image/svg+xml', mime_content_type($this->library->imagePath(2)));
+                $this->assertNull($this->library->imagePath(2, cachedOnly: true));
+                $this->assertNull($this->library->imagePath(2, original: true));
+                $this->assertNotNull($this->library->imagePath(3, cachedOnly: true));
+                $this->assertSame([2 => true], $this->library->oneDrive->previews([2]));
+                $this->assertSame(['a', 'b', 'c'], $this->client->downloads);
+            }
+            $this->index([$this->item('b', 'renamed.jpg')]);
+            $this->assertNotNull($this->library->imagePath(2));
+            $this->index([$this->item('b', 'renamed.jpg', version: 'v2')]);
             $this->assertNull($this->library->imagePath(2));
-            $this->assertNotNull($this->library->imagePath(3, cachedOnly: true));
+            $this->library->oneDrive->previews([2]);
+            $this->assertNotNull($this->library->imagePath(2));
+            $this->library->jobs->reset('previews');
+            $this->assertNull($this->library->imagePath(2));
         } finally {
             ob_end_clean();
         }
     }
+
     public function testFastCachePassDownloadsOnlyGapsAndCompletesInOneStep(): void
     {
         $this->index(array_map(fn(int $id): array => $this->item('item-' . $id), range(1, 250)));

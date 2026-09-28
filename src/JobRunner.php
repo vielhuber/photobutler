@@ -394,6 +394,9 @@ final class JobRunner
                     DELETE FROM photos; DELETE FROM scan_state; DELETE FROM import_files; DELETE FROM import_inventory;');
             }
             if ($job === 'previews') {
+                if ($this->library->oneDrive !== null) {
+                    $database->exec('DELETE FROM onedrive_preview_fallbacks');
+                }
                 foreach (new \DirectoryIterator($this->dataPath . '/thumbnails') as $file) {
                     if ($file->isFile() && preg_match('/^[a-f0-9]{64}\.jpg(?:\.webp)?$/D', $file->getFilename())) {
                         if (!unlink($file->getPathname())) {
@@ -497,7 +500,8 @@ final class JobRunner
                     try {
                         $this->library->oneDrive->connection();
                         $statement = $database->prepare(
-                            'SELECT p.id, p.path, o.photo_id FROM photos p LEFT JOIN onedrive_photos o ON o.photo_id = p.id
+                            'SELECT p.id, p.path, o.photo_id, f.photo_id AS preview_fallback FROM photos p LEFT JOIN onedrive_photos o ON o.photo_id = p.id
+                            LEFT JOIN onedrive_preview_fallbacks f ON f.photo_id=p.id AND f.version=o.version
                             WHERE p.available = 1 AND p.id > ? AND p.id <= ? ORDER BY p.id LIMIT ?'
                         );
                         $statement->execute([$state['cursor'], $state['maximum'], max(1, $previewLimit)]);
@@ -512,7 +516,7 @@ final class JobRunner
                                 throw new \RuntimeException('Galerie zuerst vollständig über OneDrive einlesen.');
                             }
                             $path = $this->dataPath . '/thumbnails/' . hash('sha256', $row['path']) . '.jpg';
-                            $cached = is_file($path) && !is_link($path);
+                            $cached = $row['preview_fallback'] !== null || (is_file($path) && !is_link($path));
                             if ($cached) {
                                 $results[$row['id']] = true;
                                 $cachedCount++;

@@ -168,10 +168,21 @@ final class OneDriveClientTest extends TestCase
                     'content' => 'invalid image'
                 ];
             }
-            $this->assertFalse($this->client->thumbnail('drive', 'photo', $this->root . '/preview', 3, 'c:v1'));
+            $this->assertSame(
+                $status === null || $status === 406 ? null : false,
+                $this->client->thumbnail('drive', 'photo', $this->root . '/preview', 3, 'c:v1')
+            );
             $this->assertFileDoesNotExist($this->root . '/preview');
             $this->assertFileDoesNotExist($this->root . '/preview.part');
         }
+    }
+
+    public function testUnavailableListingIsNotATransferFailure(): void
+    {
+        $this->client->responses = [$this->response(200, ['size' => 3, 'cTag' => 'v1']), $this->response(406, [])];
+        $this->assertNull($this->client->thumbnail('drive', 'photo', $this->root . '/preview', 3, 'c:v1'));
+        $this->assertCount(2, $this->client->calls);
+        $this->assertFileDoesNotExist($this->root . '/preview');
     }
 
     public function testReplacedOriginalCannotPopulateOldVersionThumbnailCache(): void
@@ -273,7 +284,7 @@ final class OneDriveClientTest extends TestCase
         ];
         $started = hrtime(true);
         $this->assertSame(
-            [1 => false, 2 => false],
+            [1 => null, 2 => false],
             $this->client->thumbnails('drive', [
                 1 => ['item' => 'a', 'target' => $this->root . '/a', 'bytes' => 3, 'version' => 'c:v1'],
                 2 => ['item' => 'b', 'target' => $this->root . '/b', 'bytes' => 3, 'version' => 'c:v1']

@@ -196,6 +196,24 @@ final class OneDriveBatchHttpTest extends TestCase
         $this->assertCount(23, file($this->root . '/requests'));
     }
 
+    public function testUnavailableThumbnailsFinishWithoutErrorsAndAreNotRequestedAgain(): void
+    {
+        $this->start('fallback');
+        $this->assertSame(0, $this->finish());
+        $state = $this->library->jobs->all()['previews'];
+        $this->assertSame('done', $state['status']);
+        $this->assertSame(23, $state['completed']);
+        $this->assertSame(0, $state['errors']);
+        foreach ([2, 3, 4] as $id) {
+            $this->assertNull($this->library->imagePath($id, cachedOnly: true));
+            $this->assertSame('image/svg+xml', mime_content_type($this->library->imagePath($id)));
+        }
+        $this->assertCount(21, file($this->root . '/requests'));
+        $this->start('fallback');
+        $this->assertSame(0, $this->finish());
+        $this->assertCount(21, file($this->root . '/requests'));
+    }
+
     public static function interruptions(): array
     {
         return [['download-stall', SIGINT], ['download-stall', SIGTERM], ['graph-stall', SIGINT], ['backoff', SIGINT]];

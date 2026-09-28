@@ -27,11 +27,16 @@ let upstream = https.createServer(
                                 let [id, kind] = entry.id.split('-');
                                 return {
                                     id: entry.id,
-                                    status: 200,
+                                    status: configuration.mode === 'fallback' && entry.id === '3-thumbnail' ? 406 : 200,
                                     body:
                                         kind === 'metadata'
                                             ? { size: 3000000000, cTag: 'v1' }
-                                            : { value: [{ large: { url: 'https://127.0.0.1/preview/' + id } }] }
+                                            : {
+                                                  value:
+                                                      configuration.mode === 'fallback' && id === '2'
+                                                          ? []
+                                                          : [{ large: { url: 'https://127.0.0.1/preview/' + id } }]
+                                              }
                                 };
                             })
                             .reverse()
@@ -89,6 +94,11 @@ let upstream = https.createServer(
             }
             if (configuration.mode === 'retry' && id === 2 && attempts[id] === 1) {
                 response.writeHead(429, { 'Retry-After': '1' });
+                send();
+                return;
+            }
+            if (configuration.mode === 'fallback' && id === 4) {
+                response.writeHead(406);
                 send();
                 return;
             }
