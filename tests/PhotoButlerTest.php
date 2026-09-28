@@ -214,6 +214,32 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame('Unabhängiger Eintrag', $jobs->all()['tag']['log'][0]['message']);
     }
 
+    public function testJobLogRetentionIsAtomicAndRespectsTheCallersTransaction(): void
+    {
+        for ($index = 0; $index < 30; $index++) {
+            $this->library->jobs->log('previews', 'Entry ' . $index);
+        }
+        $before = $this->library->database->query('SELECT * FROM job_logs')->fetchAll();
+        $this->library->database->exec(
+            "CREATE TRIGGER reject_log_cleanup BEFORE DELETE ON job_logs BEGIN SELECT RAISE(ABORT, 'fixture'); END"
+        );
+        try {
+            $this->library->jobs->log('previews', 'Must roll back');
+            $this->fail('Failed retention must not leave a partial write.');
+        } catch (PDOException $exception) {
+            $this->assertStringContainsString('fixture', $exception->getMessage());
+        }
+        $this->assertFalse($this->library->database->inTransaction());
+        $this->assertSame($before, $this->library->database->query('SELECT * FROM job_logs')->fetchAll());
+        $this->library->database->exec('DROP TRIGGER reject_log_cleanup');
+        $this->library->database->beginTransaction();
+        $this->library->jobs->log('previews', 'Caller-owned transaction');
+        $this->assertTrue($this->library->database->inTransaction());
+        $this->assertSame(30, (int) $this->library->database->query('SELECT COUNT(*) FROM job_logs')->fetchColumn());
+        $this->library->database->rollBack();
+        $this->assertSame($before, $this->library->database->query('SELECT * FROM job_logs')->fetchAll());
+    }
+
     public function testEachJobLogsItsOwnProcessingPhaseAndOutcome(): void
     {
         $jobs = $this->library->jobs;

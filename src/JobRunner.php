@@ -46,14 +46,27 @@ final class JobRunner
         if (!isset(self::LABELS[$job])) {
             throw new \InvalidArgumentException('Unbekannter Job.');
         }
-        $this->library->database
-            ->prepare('INSERT INTO job_logs (job, time, message) VALUES (?, ?, ?)')
-            ->execute([$job, date('d.m. H:i:s'), $message]);
-        $this->library->database
-            ->prepare(
-                'DELETE FROM job_logs WHERE job = ? AND id NOT IN (SELECT id FROM job_logs WHERE job = ? ORDER BY id DESC LIMIT 30)'
-            )
-            ->execute([$job, $job]);
+        $ownsTransaction = !$this->library->database->inTransaction();
+        if ($ownsTransaction) {
+            $this->library->database->beginTransaction();
+        }
+        try {
+            $this->library->database
+                ->prepare('INSERT INTO job_logs (job, time, message) VALUES (?, ?, ?)')
+                ->execute([$job, date('d.m. H:i:s'), $message]);
+            $this->library->database
+                ->prepare(
+                    'DELETE FROM job_logs WHERE job = ? AND id NOT IN (SELECT id FROM job_logs WHERE job = ? ORDER BY id DESC LIMIT 30)'
+                )
+                ->execute([$job, $job]);
+            if ($ownsTransaction) {
+                $this->library->database->commit();
+            }
+        } finally {
+            if ($ownsTransaction && $this->library->database->inTransaction()) {
+                $this->library->database->rollBack();
+            }
+        }
     }
 
     /**
