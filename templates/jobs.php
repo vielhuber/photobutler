@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1) ?>
 <section aria-label="Jobsteuerung">
-    <p class="muted">Jeden Job unabhängig mit dem angezeigten PHP-Befehl auf dem Server ausführen. Die Befehle eignen sich auch für Cron. Fortschritt und Status werden automatisch aktualisiert; der Browser steuert keine Verarbeitung. Abbrechen in der Konsole mit Strg+C, fortsetzen mit demselben Befehl.</p>
+    <p class="muted">Jeden Job unabhängig mit dem angezeigten PHP-Befehl auf dem Server ausführen oder alle Jobs per Cronjob über <code>?cron=CRON_SECRET</code> fortsetzen. Fortschritt und Status werden automatisch aktualisiert; der Browser steuert keine Verarbeitung. Abbrechen in der Konsole mit Strg+C, fortsetzen mit demselben Befehl.</p>
     <div class="jobs-grid">
         <?php foreach (\vielhuber\photobutler\JobRunner::LABELS as $job => $label):
             $state = $jobs[$job]; ?>

@@ -34,7 +34,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             for (let directory of ['.data', 'public', 'photos']) fs.mkdirSync(root + '/' + directory);
             fs.writeFileSync(
                 root + '/.data/.env',
-                `PHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\nAUTH_USERNAME=${credentials.username}\nAUTH_PASSWORD=${credentials.password}\nJWT_SECRET=isolated-gallery-controls-signing-secret\n`
+                `AUTH_USERNAME=${credentials.username}\nAUTH_PASSWORD=${credentials.password}\nJWT_SECRET=isolated-gallery-controls-signing-secret\n`
             );
             fs.writeFileSync(
                 root + '/public/index.php',
@@ -47,8 +47,14 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 $paths=['old/old.jpg','_WHATSAPP/.Statuses/story.jpg','_WHATSAPP/WhatsApp Animated Gifs/Sent/animation.jpg','_WHATSAPP/WhatsApp Images/animation.gif'];
                 for($i=1;$i<=62;$i++) $paths[]='gallery/photo-'.str_pad((string)$i,3,'0',STR_PAD_LEFT).'.jpg';
                 foreach($paths as $index=>$path){imagefilledrectangle($image,0,0,15,15,imagecolorallocate($image,$index*3,0,0)); $target=$root.'/photos/'.$path; if(!is_dir(dirname($target))) mkdir(dirname($target),0700,true); imagejpeg($image,$target);}
-                $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index();
-                foreach($library->database->query('SELECT id FROM photos')->fetchAll(PDO::FETCH_COLUMN) as $id) $library->imagePath((int)$id);
+            `);
+            execFileSync('php', [
+                project + '/tests/fixtures/seed-cloud.php',
+                root,
+                JSON.stringify({ directory: root + '/photos', thumbnails: true })
+            ]);
+            php(`
+                $library=new \\vielhuber\\photobutler\\PhotoButler($root);
                 $library->database->exec("UPDATE photos SET priority=CASE WHEN name NOT LIKE 'photo-%' THEN -1 ELSE (name >= 'photo-001' AND name < 'photo-011') END, taken=CASE WHEN album='old' THEN '2022-12-31 23:59:59' ELSE '2024-01-01 00:00:00' END");
             `);
             let socket = net.createServer();

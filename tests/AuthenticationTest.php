@@ -2,28 +2,23 @@
 declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
-use vielhuber\photobutler\PhotoButler;
 
 final class AuthenticationTest extends TestCase
 {
-    private string $root;
+    use CloudFixture;
+
     private string $address;
     private mixed $process;
     private array $cookies = [];
-    private PhotoButler $library;
 
     protected function setUp(): void
     {
-        $this->root = sys_get_temp_dir() . '/photobutler-auth-' . bin2hex(random_bytes(8));
-        foreach (['.data', 'public', 'sessions', 'photos'] as $directory) {
-            mkdir($this->root . '/' . $directory, 0700, true);
-        }
-        file_put_contents(
-            $this->root . '/.data/.env',
-            "AUTH_USERNAME=auth-test\nAUTH_PASSWORD=isolated-test-password\nJWT_SECRET=isolated-auth-test-signing-secret\nPHOTO_PATHS='" .
-                json_encode([$this->root . '/photos'], JSON_THROW_ON_ERROR) .
-                "'\n"
+        $this->createCloudLibrary(
+            "AUTH_USERNAME=auth-test\nAUTH_PASSWORD=isolated-test-password\nJWT_SECRET=isolated-auth-test-signing-secret\n"
         );
+        foreach (['public', 'sessions'] as $directory) {
+            mkdir($this->root . '/' . $directory, 0700);
+        }
         file_put_contents(
             $this->root . '/public/index.php',
             '<?php declare(strict_types=1); require ' .
@@ -31,7 +26,6 @@ final class AuthenticationTest extends TestCase
                 '; if (isset($_GET["https"])) { $_SERVER["HTTPS"] = "on"; }' .
                 ' (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();'
         );
-        $this->library = new PhotoButler($this->root);
         $socket = stream_socket_server('tcp://127.0.0.1:0');
         $this->address = stream_socket_get_name($socket, false);
         fclose($socket);
@@ -72,14 +66,7 @@ final class AuthenticationTest extends TestCase
     {
         proc_terminate($this->process);
         proc_close($this->process);
-        $files = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($this->root, FilesystemIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::CHILD_FIRST
-        );
-        foreach ($files as $file) {
-            $file->isDir() ? rmdir($file->getPathname()) : unlink($file->getPathname());
-        }
-        rmdir($this->root);
+        $this->removeCloudLibrary();
     }
 
     private function request(
@@ -127,86 +114,42 @@ final class AuthenticationTest extends TestCase
         return $result;
     }
 
-    public function testVideoConditionalRequestsRevalidateWeakEtagsWithoutResendingOriginals(): void
+    public function testThumbnailConditionalRequestsRevalidateStrongEtagsWithoutResendingPreviews(): void
     {
-        $source = $this->root . '/photos/video.mp4';
-        $original = "\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom";
-        file_put_contents($source, $original);
-        $library = new PhotoButler($this->root);
-        $library->index();
-        $id = $library->photos()[0]->id;
+        $this->index([$this->item('a')]);
+        $this->library->oneDrive->previews([1]);
+        $thumbnail = $this->library->imagePath(1, cachedOnly: true);
+        $cached = file_get_contents($thumbnail);
         $this->login();
-        foreach (['original', 'detail'] as $size) {
-            $url = '?photo=' . $id . '&size=' . $size;
-            [$status, $body, $headers] = $this->request($url);
-            $this->assertSame(200, $status);
-            $this->assertSame($original, $body);
-            $this->assertSame(1, preg_match('/^ETag: (W\/"[a-f0-9]{64}")$/mi', $headers, $match));
-            $etag = $match[1];
-            foreach ([false, true] as $head) {
-                foreach ([$etag, substr($etag, 2), '"outdated", ' . $etag, '*'] as $condition) {
-                    [$status, $body, $headers] = $this->request(
-                        $url,
-                        requestHeaders: ['If-None-Match: ' . $condition],
-                        head: $head
-                    );
-                    $this->assertSame(304, $status);
-                    $this->assertSame('', $body);
-                    $this->assertStringContainsString('ETag: ' . $etag, $headers);
-                    $this->assertStringContainsString('Cache-Control: private, no-cache', $headers);
-                }
-            }
-            $this->assertSame(200, $this->request($url, requestHeaders: ['If-None-Match: "outdated"'])[0]);
-            [$status, $body] = $this->request($url, requestHeaders: ['Range: bytes=0-7']);
-            $this->assertSame(206, $status);
-            $this->assertSame(substr($original, 0, 8), $body);
-            [$status, $body, $headers] = $this->request(
-                $url . '&download=1',
-                requestHeaders: ['If-None-Match: ' . $etag]
-            );
-            $this->assertSame(200, $status);
-            $this->assertSame($original, $body);
-            $this->assertStringContainsString('Cache-Control: no-store', $headers);
-        }
-        touch($source, filemtime($source) + 2);
-        [$status, $body, $headers] = $this->request($url, requestHeaders: ['If-None-Match: ' . $etag]);
+        $url = '?photo=1&size=display';
+        [$status, $body, $headers] = $this->request($url);
         $this->assertSame(200, $status);
-        $this->assertSame($original, $body);
-        $this->assertStringNotContainsString('ETag: ' . $etag, $headers);
-        $this->assertSame($original, file_get_contents($source));
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
+        $this->assertSame($cached, $body);
+        $this->assertStringContainsString('Content-Type: image/jpeg', $headers);
+        $this->assertSame(1, preg_match('/^ETag: ("[a-f0-9]{64}")$/mi', $headers, $match));
+        $etag = $match[1];
+        foreach ([false, true] as $head) {
+            foreach ([$etag, 'W/' . $etag, '"outdated", ' . $etag, '*'] as $condition) {
+                [$status, $body, $headers] = $this->request(
+                    $url,
+                    requestHeaders: ['If-None-Match: ' . $condition],
+                    head: $head
+                );
+                $this->assertSame(304, $status);
+                $this->assertSame('', $body);
+                $this->assertStringContainsString('ETag: ' . $etag, $headers);
+                $this->assertStringContainsString('Cache-Control: private, no-cache', $headers);
+            }
+        }
+        $this->assertSame(200, $this->request($url, requestHeaders: ['If-None-Match: "outdated"'])[0]);
+        [$status, $body, $headers] = $this->request($url . '&download=1', requestHeaders: ['If-None-Match: ' . $etag]);
+        $this->assertSame(200, $status);
+        $this->assertSame($cached, $body);
+        $this->assertStringContainsString('Cache-Control: no-store', $headers);
+        $this->assertSame(404, $this->request('?photo=2&size=display')[0]);
+        $this->assertSame(['a'], $this->client->downloads);
         $this->cookies = [];
         $this->assertSame(401, $this->request($url, requestHeaders: ['If-None-Match: *'])[0]);
-    }
-
-    public function testCliPreviewBatchSavesConcurrentResultsVisibleToAuthenticatedBrowser(): void
-    {
-        $image = imagecreatetruecolor(80, 60);
-        imagejpeg($image, $this->root . '/photos/first.jpg');
-        imagejpeg($image, $this->root . '/photos/second.jpg');
-        file_put_contents($this->root . '/photos/second.jpg', 'second', FILE_APPEND);
-        $library = new PhotoButler($this->root);
-        $library->index();
-        $this->login();
-        [, $body] = $this->request('?view=jobs');
-        $document = \Dom\HTMLDocument::createFromString($body, LIBXML_NOERROR);
-        $command = $document->querySelector('[data-job="previews"] .job-command code')->textContent;
-        $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
-        $output = stream_get_contents($pipes[1]);
-        $errors = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        $this->assertSame(0, proc_close($process), $errors);
-        $this->assertStringContainsString('100 %', $output);
-        $state = $library->jobs->all()['previews'];
-        $this->assertSame('done', $state['status']);
-        $this->assertSame(2, $state['completed']);
-        $this->assertSame(0, $state['errors']);
-        $this->assertCount(2, glob($this->root . '/.data/thumbnails/*'));
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.detail*'));
-        [$status, $body] = $this->request('?jobs=1');
-        $this->assertSame(200, $status);
-        $this->assertSame(100, json_decode($body, true, flags: JSON_THROW_ON_ERROR)['previews']['percent']);
     }
 
     public function testEmptyGalleryReportsIdleJobsWithoutStartingWork(): void
@@ -226,68 +169,68 @@ final class AuthenticationTest extends TestCase
         }
     }
 
-    public function testJobsReturnJsonWhenInventoryProcessCannotStart(): void
+    public function testBrowserJobControlsAreRejectedInFavorOfCliAndCron(): void
     {
-        file_put_contents(
-            $this->root . '/public/index.php',
-            '<?php declare(strict_types=1);' .
-                ' ini_set("display_errors", "1"); ini_set("html_errors", "1");' .
-                ' putenv(' .
-                var_export('PATH=' . $this->root . '/missing-bin', true) .
-                ');' .
-                ' require ' .
-                var_export(dirname(__DIR__) . '/vendor/autoload.php', true) .
-                ';' .
-                ' (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();'
-        );
         $this->login();
-        for ($request = 0; $request < 2; $request++) {
-            [$status, $body, $headers] = $this->request('?jobs=1');
-            $this->assertSame(200, $status);
-            $this->assertStringContainsString('application/json', $headers);
-            $jobs = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
-            $this->assertSame(['scan', 'previews', 'tag', 'faces'], array_keys($jobs));
-            $this->assertStringContainsString('Bestandsaufnahme nicht verfügbar', $jobs['scan']['warning']);
-            foreach ($jobs as $job) {
-                $this->assertSame('idle', $job['status']);
-                $this->assertSame([], $job['log']);
-            }
-        }
         [$status, $body] = $this->request('?view=jobs');
         $this->assertSame(200, $status);
-        $this->assertStringNotContainsString('proc_open()', $body);
-        $this->assertStringNotContainsString('Warning:', $body);
+        $this->assertStringContainsString('?cron=CRON_SECRET', $body);
         preg_match('/name="csrf-token" content="([^"]+)"/', $body, $match);
-        [$status, $body] = $this->request('', [
-            'action' => 'job-start',
-            'job' => 'scan',
-            'csrf' => $match[1]
-        ]);
-        $this->assertSame(410, $status);
-        $this->assertArrayHasKey('error', json_decode($body, true, flags: JSON_THROW_ON_ERROR));
-        $process = proc_open(
-            [PHP_BINARY, dirname(__DIR__) . '/bin/photobutler-index', '--root=' . $this->root, '--scan-only'],
-            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes,
-            env_vars: array_merge(getenv(), ['PATH' => $this->root . '/missing-bin'])
-        );
-        $output = stream_get_contents($pipes[1]);
-        $errors = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        $this->assertSame(1, proc_close($process));
-        $this->assertSame('', $output);
-        $this->assertStringContainsString('konnte den Lauf nicht abschließen', $errors);
-        $this->assertStringNotContainsString('Warning:', $errors);
-        $this->assertStringNotContainsString('<br', $errors);
-        $this->assertSame(
-            0,
-            (int) $this->library->database->query('SELECT COUNT(*) FROM import_inventory')->fetchColumn()
-        );
+        foreach (['job-start', 'job-pause', 'job-step', 'scan', 'tag'] as $action) {
+            [$status, $body] = $this->request('', ['action' => $action, 'job' => 'scan', 'csrf' => $match[1]]);
+            $this->assertSame(410, $status);
+            $this->assertArrayHasKey('error', json_decode($body, true, flags: JSON_THROW_ON_ERROR));
+        }
         $this->assertSame(
             'idle',
             $this->library->database->query("SELECT status FROM jobs WHERE job = 'scan'")->fetchColumn()
         );
+    }
+
+    public function testCronRequiresTheConfiguredSecretAndResumesOnlyAvailableJobs(): void
+    {
+        $this->cookies = [];
+        [$status, $body, $headers] = $this->request('?cron=' . str_repeat('a', 64));
+        $this->assertSame(503, $status);
+        $this->assertStringContainsString('CRON_SECRET', $body);
+        $secret = bin2hex(random_bytes(32));
+        file_put_contents($this->root . '/.data/.env', 'CRON_SECRET=' . $secret . "\n", FILE_APPEND);
+        foreach (
+            ['?cron=' . str_repeat('a', 64), '?cron=', '?cron[]=' . $secret, '?cron=' . substr($secret, 1)]
+            as $url
+        ) {
+            [$status, $body] = $this->request($url);
+            $this->assertSame(403, $status);
+            $this->assertSame('', $body);
+        }
+        $locks = [];
+        try {
+            foreach (['scan', 'previews'] as $job) {
+                $lock = fopen($this->root . '/.data/cli-' . $job . '.lock', 'c');
+                $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+                $locks[] = $lock;
+            }
+            [$status, $body, $headers] = $this->request('?cron=' . $secret);
+        } finally {
+            foreach ($locks as $lock) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
+        $this->assertSame(200, $status, file_get_contents($this->root . '/server.log'));
+        $this->assertStringContainsString('Content-Type: text/plain; charset=utf-8', $headers);
+        $this->assertSame(
+            "Galerie einlesen: läuft bereits\n" .
+                "Thumbnails downloaden: läuft bereits\n" .
+                "KI-Tagging: übersprungen (KI nicht konfiguriert)\n" .
+                "Gesichtertagging: übersprungen (Gesichtserkennung nicht installiert)\n",
+            $body
+        );
+        $this->assertStringNotContainsStringIgnoringCase('Set-Cookie', $headers);
+        $this->assertSame([], $this->cookies);
+        foreach ($this->library->jobs->all() as $state) {
+            $this->assertSame('idle', $state['status']);
+        }
     }
 
     public function testYearCookieSurvivesLostServerSessionAndBrowserSessionCookie(): void

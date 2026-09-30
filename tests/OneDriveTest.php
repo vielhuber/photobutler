@@ -5,175 +5,18 @@ use PHPUnit\Framework\TestCase;
 use vielhuber\photobutler\OneDriveClient;
 use vielhuber\photobutler\PhotoButler;
 
-final class FixtureOneDriveClient extends OneDriveClient
-{
-    public array $pages = [];
-    public array $downloads = [];
-    public array $requests = [];
-    public ?int $failDownload = null;
-    public string $jpeg;
-    public array $missingThumbnails = [];
-
-    public function get(string $path): array
-    {
-        $this->requests[] = $path;
-        $page = array_shift($this->pages);
-        if ($page instanceof RuntimeException) {
-            throw $page;
-        }
-        if (!is_array($page)) {
-            throw new RuntimeException('Unexpected fixture request');
-        }
-        return $page;
-    }
-
-    public function thumbnails(string $drive, array $photos, ?callable $progress = null): array
-    {
-        $results = [];
-        foreach ($photos as $id => $photo) {
-            $results[$id] = $this->thumbnail(
-                $drive,
-                $photo['item'],
-                $photo['target'],
-                $photo['bytes'],
-                $photo['version']
-            );
-            if ($progress !== null) {
-                $progress($id, $results[$id]);
-            }
-        }
-        return $results;
-    }
-
-    public function thumbnail(string $drive, string $item, string $target, int $bytes, string $version): ?bool
-    {
-        $this->downloads[] = $item;
-        if ($this->failDownload === count($this->downloads)) {
-            throw new RuntimeException('Fixture transfer interrupted');
-        }
-        if (in_array($item, $this->missingThumbnails, true)) {
-            return null;
-        }
-        file_put_contents($target, $this->jpeg);
-        return true;
-    }
-}
-
 final class OneDriveTest extends TestCase
 {
-    private string $root;
-    private PhotoButler $library;
-    private FixtureOneDriveClient $client;
+    use CloudFixture;
 
     protected function setUp(): void
     {
-        $this->root = sys_get_temp_dir() . '/photobutler-cloud-' . bin2hex(random_bytes(8));
-        mkdir($this->root . '/.data', 0700, true);
-        file_put_contents($this->root . '/.data/.env', "ONEDRIVE_CLIENT_ID=fixture\nONEDRIVE_FOLDER=FOTOS\n");
-        file_put_contents(
-            $this->root . '/.data/onedrive-source.json',
-            json_encode(['drive' => 'drive', 'folder' => 'root', 'folder_path' => 'FOTOS', 'client_id' => 'fixture'])
-        );
-        $this->client = new FixtureOneDriveClient($this->root . '/.data', 'fixture');
-        ob_start();
-        imagejpeg(imagecreatetruecolor(16, 12));
-        $this->client->jpeg = ob_get_clean();
-        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
+        $this->createCloudLibrary();
     }
 
     protected function tearDown(): void
     {
-        unset($this->library);
-        foreach (
-            new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator($this->root, FilesystemIterator::SKIP_DOTS),
-                RecursiveIteratorIterator::CHILD_FIRST
-            )
-            as $file
-        ) {
-            if ($file->isDir() && !$file->isLink()) {
-                rmdir($file->getPathname());
-                continue;
-            }
-            unlink($file->getPathname());
-        }
-        rmdir($this->root);
-    }
-
-    private function item(
-        string $id,
-        string $name = 'photo.jpg',
-        string $parent = 'root',
-        string $version = 'v1'
-    ): array {
-        return [
-            'id' => $id,
-            'name' => $name,
-            'parentReference' => ['id' => $parent],
-            'file' => ['mimeType' => 'image/jpeg'],
-            'size' => strlen($this->client->jpeg),
-            'lastModifiedDateTime' => '2026-09-01T12:00:00Z',
-            'cTag' => $version
-        ];
-    }
-
-    private function index(array $items): void
-    {
-        $this->client->pages[] = [
-            'value' => [['id' => 'root', 'name' => 'FOTOS', 'folder' => []], ...$items],
-            '@odata.deltaLink' => OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture'
-        ];
-        $this->library->index();
-    }
-
-    public function testPreviewWorkerWaitsForBoundSocketToStartListening(): void
-    {
-        mkdir($this->root . '/commands');
-        file_put_contents(
-            $this->root . '/commands/listener.py',
-            <<<'PYTHON'
-            import os, socket, sys, time
-            path = sys.argv[1]
-            server = socket.socket(socket.AF_UNIX)
-            try:
-                server.bind(path)
-                time.sleep(0.25)
-                server.listen(1)
-                server.settimeout(5)
-                connection, _ = server.accept()
-                connection.recv(32)
-                connection.sendall(b"1\n")
-                connection.close()
-            finally:
-                server.close()
-                os.unlink(path)
-                os.rmdir(os.path.dirname(path))
-            PYTHON
-        );
-        file_put_contents(
-            $this->root . '/commands/node',
-            "#!/bin/sh\npython3 " .
-                escapeshellarg($this->root . '/commands/listener.py') .
-                ' "$7" >/dev/null 2>&1 &' .
-                "\n"
-        );
-        chmod($this->root . '/commands/node', 0700);
-        $path = getenv('PATH');
-        putenv('PATH=' . $this->root . '/commands:' . $path);
-        try {
-            $this->assertSame([1 => true], new \vielhuber\photobutler\PreviewPool($this->root . '/.data')->render([1]));
-        } finally {
-            putenv('PATH=' . $path);
-        }
-    }
-
-    public function testLegacyWindowsThumbnailJobsAreBlockedBeforeTouchingTheMount(): void
-    {
-        file_put_contents($this->root . '/.data/.env', "PHOTO_PATHS='[\"/mnt/o/FOTOS\"]'\n");
-        $library = new PhotoButler($this->root);
-        $this->expectExceptionCode(412);
-        $this->expectException(RuntimeException::class);
-        $library->jobs->start('previews');
+        $this->removeCloudLibrary();
     }
 
     public function testMetadataProgressEstimatesTheScanSeparatelyAndSurvivesResume(): void
@@ -383,20 +226,17 @@ final class OneDriveTest extends TestCase
 
     public function testMigrationPreservesLocalIdsCachesAndMetadataWithoutAccessingOldMount(): void
     {
-        mkdir($this->root . '/legacy');
-        file_put_contents($this->root . '/legacy/photo.jpg', $this->client->jpeg);
+        $this->library->database
+            ->prepare(
+                "INSERT INTO photos (id, root, path, album, name, modified, bytes, width, height, taken, seen)
+                VALUES (1, ?, ?, 'legacy', 'photo.jpg', 1, 1, 0, 0, '2026-09-01 12:00:00', 'legacy')"
+            )
+            ->execute([$this->root . '/legacy', $this->root . '/legacy/photo.jpg']);
+        $this->library->priority(1, 1);
+        $this->library->saveTags(1, 'retained');
+        $thumbnail = $this->root . '/.data/thumbnails/' . hash('sha256', $this->root . '/legacy/photo.jpg') . '.jpg';
+        file_put_contents($thumbnail, $this->client->jpeg);
         $configuration = file_get_contents($this->root . '/.data/.env');
-        file_put_contents(
-            $this->root . '/.data/.env',
-            "PHOTO_PATHS='" . json_encode([$this->root . '/legacy']) . "'\n"
-        );
-        $local = new PhotoButler($this->root);
-        $local->index();
-        $local->priority(1, 1);
-        $local->saveTags(1, 'retained');
-        $thumbnail = $local->imagePath(1);
-        unlink($this->root . '/legacy/photo.jpg');
-        rmdir($this->root . '/legacy');
         file_put_contents(
             $this->root . '/.data/.env',
             $configuration . 'ONEDRIVE_LEGACY_ROOT=' . $this->root . "/legacy\n"
@@ -441,8 +281,7 @@ final class OneDriveTest extends TestCase
     public function testMissingThumbnailsNeverDownloadFromAnalysisOrGallery(): void
     {
         $this->index([$this->item('a')]);
-        $this->assertNull($this->library->imagePath(1, generate: false));
-        $this->assertNull($this->library->imagePath(1, original: true));
+        $this->assertNull($this->library->imagePath(1));
         $this->library->tag(1);
         $this->library->tagFaces(1);
         $this->assertSame([], $this->client->downloads);
@@ -516,7 +355,6 @@ final class OneDriveTest extends TestCase
                 $this->assertSame('done', $run['status']);
                 $this->assertSame('image/svg+xml', mime_content_type($this->library->imagePath(2)));
                 $this->assertNull($this->library->imagePath(2, cachedOnly: true));
-                $this->assertNull($this->library->imagePath(2, original: true));
                 $this->assertNotNull($this->library->imagePath(3, cachedOnly: true));
                 $this->assertSame([2 => true], $this->library->oneDrive->previews([2]));
                 $this->assertSame(['a', 'b', 'c'], $this->client->downloads);

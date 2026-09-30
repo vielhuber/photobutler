@@ -17,31 +17,23 @@ final class PhotoButler
     ];
 
     public const VIDEO_EXTENSIONS = ['mp4', 'm4v', 'mov', 'webm', '3gp', 'avi', 'mkv'];
-    private const IMPORT_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', ...self::VIDEO_EXTENSIONS];
     private const AUTOMATIC_EXCLUSION = "taken < '2023-01-01' OR instr(lower(path), '/whatsapp animated gifs/') > 0 OR (instr(lower(path), '/_whatsapp/') > 0 AND (instr(lower(path), '/.statuses/') > 0 OR lower(path) LIKE '%.gif'))";
     private const LOGIN_LIFETIME = 365 * 24 * 60 * 60;
-    private const MAX_JPEG_PIXELS = 120000000;
 
     public ?\stdClass $scanProgress = null;
     private readonly array $settings;
     private readonly string $dataPath;
     private readonly simpleauth $auth;
-    private ?PhotoRenderer $photoRenderer = null;
     public readonly \PDO $database;
     public readonly FaceStore $faces;
-    public readonly DuplicateStore $duplicates;
     public readonly JobRunner $jobs;
     public readonly ?OneDriveSource $oneDrive;
 
     /**
      * Load private settings and open the persistent photo index.
      */
-    public function __construct(
-        string $rootDir,
-        ?PhotoRenderer $photoRenderer = null,
-        ?OneDriveClient $oneDriveClient = null
-    ) {
-        $this->photoRenderer = $photoRenderer;
+    public function __construct(string $rootDir, ?OneDriveClient $oneDriveClient = null)
+    {
         $this->dataPath = $rootDir . '/.data';
         if (!is_file($this->dataPath . '/.env')) {
             throw new \RuntimeException('Konfiguration fehlt. Zuerst photobutler-init ausführen.');
@@ -76,9 +68,7 @@ final class PhotoButler
         CREATE TABLE IF NOT EXISTS photo_metadata (
             id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, modified INTEGER NOT NULL, bytes INTEGER NOT NULL,
             manual_tags TEXT, priority INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS import_files (path TEXT PRIMARY KEY);
-        CREATE TABLE IF NOT EXISTS import_inventory (id INTEGER PRIMARY KEY CHECK (id = 1), roots TEXT NOT NULL, estimated INTEGER NOT NULL);");
+        );");
         if (
             in_array(
                 'favorite',
@@ -118,7 +108,6 @@ final class PhotoButler
                 }
             }
         }
-        $this->duplicates = new DuplicateStore($this->database, $this->dataPath);
         $this->faces = new FaceStore($this->database);
         $this->jobs = new JobRunner($this, $this->dataPath);
         $this->oneDrive =
@@ -145,263 +134,35 @@ final class PhotoButler
     }
 
     /**
-     * Compare a persisted source-file snapshot with the index, independently of scan checkpoints.
+     * Fail jobs with an actionable message while the gallery itself stays usable without a source.
      */
-    public function importProgress(bool $refresh = false): array
+    public function oneDriveSource(): OneDriveSource
     {
-        if ($this->oneDrive !== null) {
-            return $this->oneDrive->progress();
-        }
-        $roots = $this->photoPaths();
-        $scope = json_encode($roots, JSON_THROW_ON_ERROR);
-        $inventory = $this->database->query('SELECT roots, estimated FROM import_inventory WHERE id = 1')->fetch();
-        if ($refresh || !$inventory || $inventory['roots'] !== $scope) {
-            try {
-                clearstatcache();
-                $known = [];
-                foreach ($roots as $root) {
-                    if (realpath($root) !== $root || !is_dir($root) || !is_readable($root)) {
-                        throw new \RuntimeException(
-                            'Fotoquelle nicht verfügbar. Gespeicherter Bestand bleibt erhalten.'
-                        );
-                    }
-                    if (!$refresh) {
-                        $statement = $this->database->prepare(
-                            'SELECT path FROM photos WHERE available = 1 AND substr(path, 1, length(?)) = ?'
-                        );
-                        $statement->execute([$root . '/', $root . '/']);
-                        array_push($known, ...$statement->fetchAll(\PDO::FETCH_COLUMN));
-                    }
-                }
-                set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
-                    throw new \RuntimeException(
-                        'Bestandsaufnahme nicht verfügbar. Node.js im PHP-Suchpfad und Prozessrechte prüfen.',
-                        previous: new \ErrorException($message, 0, $severity, $file, $line)
-                    );
-                }, E_WARNING);
-                try {
-                    $process = proc_open(
-                        ['node', dirname(__DIR__) . '/scripts/import-inventory.cjs'],
-                        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']],
-                        $pipes
-                    );
-                } finally {
-                    restore_error_handler();
-                }
-                if ($process === false) {
-                    throw new \RuntimeException('Bestandsaufnahme nicht verfügbar.');
-                }
-                fwrite(
-                    $pipes[0],
-                    json_encode(
-                        [
-                            'roots' => $roots,
-                            'known' => $refresh ? null : $known,
-                            'extensions' => self::IMPORT_EXTENSIONS
-                        ],
-                        JSON_THROW_ON_ERROR
-                    )
-                );
-                fclose($pipes[0]);
-                $result = stream_get_contents($pipes[1]);
-                fclose($pipes[1]);
-                if (proc_close($process) !== 0) {
-                    throw new \RuntimeException('Fotoquelle nicht lesbar. Gespeicherter Bestand bleibt erhalten.');
-                }
-                $paths = json_decode($result, true, flags: JSON_THROW_ON_ERROR);
-                $this->database->exec('BEGIN IMMEDIATE');
-                $inventory = $this->database
-                    ->query('SELECT roots, estimated FROM import_inventory WHERE id = 1')
-                    ->fetch();
-                if ($refresh || !$inventory || $inventory['roots'] !== $scope) {
-                    $this->database->exec('DELETE FROM import_files');
-                    $insert = $this->database->prepare('INSERT INTO import_files (path) VALUES (?)');
-                    foreach ($paths as $path) {
-                        $insert->execute([$path]);
-                    }
-                    $this->database
-                        ->prepare('INSERT OR REPLACE INTO import_inventory (id, roots, estimated) VALUES (1, ?, ?)')
-                        ->execute([$scope, (int) !$refresh]);
-                    $inventory = ['roots' => $scope, 'estimated' => (int) !$refresh];
-                }
-                $this->database->commit();
-            } finally {
-                if ($this->database->inTransaction()) {
-                    $this->database->rollBack();
-                }
-            }
-        }
-        $progress = $this->database
-            ->query(
-                "SELECT COUNT(*) AS total,
-            COALESCE(SUM(p.available = 1), 0) AS completed
-            FROM import_files i LEFT JOIN photos p ON p.path = i.path"
-            )
-            ->fetch();
-        $progress['estimated'] = (int) $inventory['estimated'];
-        return $progress;
+        return $this->oneDrive ??
+            throw new \RuntimeException('OneDrive nicht konfiguriert. ONEDRIVE_CLIENT_ID in .data/.env setzen.');
     }
 
     /**
-     * Resume path-only discovery without opening originals; limit counts inspected source files.
+     * Report the last complete cloud catalog without network requests.
      */
-    public function index(int $limit = PHP_INT_MAX): int
+    public function importProgress(): array
     {
+        return $this->oneDriveSource()->progress();
+    }
+
+    /**
+     * Import one metadata page without opening originals.
+     */
+    public function index(): int
+    {
+        $source = $this->oneDriveSource();
         $lock = fopen($this->dataPath . '/index.lock', 'c');
         if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
             throw new \RuntimeException('Dieser Hintergrundlauf läuft bereits.', 409);
         }
         try {
-            if ($this->oneDrive !== null) {
-                return $this->oneDrive->index();
-            }
-            $roots = $this->photoPaths();
-            foreach ($roots as $root) {
-                if (realpath($root) !== $root || !is_dir($root) || !is_readable($root)) {
-                    throw new \RuntimeException(
-                        'Fotoquelle nicht verfügbar oder kein kanonischer Pfad. Index bleibt erhalten.'
-                    );
-                }
-            }
-            $this->database->exec('BEGIN IMMEDIATE');
-            $saved = $this->database->query('SELECT state FROM scan_state WHERE id = 1')->fetchColumn();
-            $scan = $saved === false ? null : json_decode($saved, flags: JSON_THROW_ON_ERROR);
-            $newScan = $scan === null || $scan->roots !== $roots;
-            if ($newScan) {
-                $scan = new \stdClass();
-                $scan->roots = $roots;
-                $scan->seen = bin2hex(random_bytes(12));
-                $scan->directories = [];
-                foreach (array_reverse($roots) as $root) {
-                    $directory = new \stdClass();
-                    $directory->root = $root;
-                    $directory->path = $root;
-                    $directory->after = '';
-                    $scan->directories[] = $directory;
-                }
-            }
-            if (!isset($scan->progress)) {
-                $scan->progress = new \stdClass();
-                $scan->progress->checked = 0;
-                $scan->progress->changed = 0;
-                $scan->progress->folder = '';
-                $scan->progress->partial = !$newScan;
-            }
-            $processed = 0;
-            $visited = 0;
-            $deadline = $limit === PHP_INT_MAX ? INF : microtime(true) + 5;
-            $nextId =
-                1 +
-                (int) $this->database
-                    ->query(
-                        'SELECT MAX(id) FROM (
-                SELECT MAX(id) AS id FROM photos UNION ALL SELECT MAX(id) FROM photo_metadata
-            )'
-                    )
-                    ->fetchColumn();
-            $find = $this->database
-                ->prepare('SELECT id, modified, bytes, manual_tags, priority, 1 AS indexed FROM photos WHERE path = :path
-                UNION ALL SELECT id, modified, bytes, manual_tags, priority, 0 AS indexed FROM photo_metadata WHERE path = :path LIMIT 1');
-            $mark = $this->database->prepare(
-                'UPDATE photos SET seen = ?, available = 1, priority = CASE WHEN priority = 0 AND (' .
-                    self::AUTOMATIC_EXCLUSION .
-                    ') THEN -1 ELSE priority END WHERE id = ?'
-            );
-            $upsert = $this->database
-                ->prepare("INSERT INTO photos (id, root, path, album, name, modified, bytes, width, height, taken, seen, manual_tags, priority)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET root=excluded.root, album=excluded.album, modified=excluded.modified,
-                bytes=excluded.bytes, width=0, height=0, taken=excluded.taken,
-                seen=excluded.seen, available=1, status='pending', attempted=0, ai_tags='[]', description=''");
-            while ($scan->directories !== [] && $visited < max(1, $limit) && microtime(true) < $deadline) {
-                $directory = $scan->directories[array_key_last($scan->directories)];
-                if (realpath($directory->path) !== $directory->path || !is_readable($directory->path)) {
-                    throw new \RuntimeException('Fotoordner nicht verfügbar. Index bleibt erhalten.');
-                }
-                $scan->progress->folder =
-                    substr($directory->path, strlen($directory->root) + 1) ?: basename($directory->root);
-                $entries = $directory->entries ??= scandir($directory->path);
-                if ($entries === false) {
-                    throw new \RuntimeException('Fotoordner nicht lesbar. Index bleibt erhalten.');
-                }
-                $finished = true;
-                foreach ($entries as $entry) {
-                    if ($entry === '.' || $entry === '..' || strcmp($entry, $directory->after) <= 0) {
-                        continue;
-                    }
-                    if ($visited >= max(1, $limit) || microtime(true) >= $deadline) {
-                        $finished = false;
-                        break;
-                    }
-                    $path = $directory->path . '/' . $entry;
-                    $directory->after = $entry;
-                    if (is_link($path)) {
-                        continue;
-                    }
-                    if (is_dir($path)) {
-                        $child = new \stdClass();
-                        $child->root = $directory->root;
-                        $child->path = $path;
-                        $child->after = '';
-                        $scan->directories[] = $child;
-                        $finished = false;
-                        break;
-                    }
-                    if (!in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), self::IMPORT_EXTENSIONS, true)) {
-                        continue;
-                    }
-                    $visited++;
-                    $modified = filemtime($path);
-                    $bytes = filesize($path);
-                    if (!is_file($path) || $modified === false || $bytes === false) {
-                        throw new \RuntimeException('Original nicht verfügbar. Import bleibt wiederholbar.');
-                    }
-                    $find->execute([':path' => $path]);
-                    $existing = $find->fetch();
-                    if ($existing && $existing['indexed']) {
-                        $mark->execute([$scan->seen, $existing['id']]);
-                        continue;
-                    }
-                    $album = dirname(substr($path, strlen($directory->root) + 1));
-                    $id = $existing['id'] ?? $nextId++;
-                    $upsert->execute([
-                        $id,
-                        $directory->root,
-                        $path,
-                        $album === '.' ? basename($directory->root) : $album,
-                        $entry,
-                        $existing['modified'] ?? $modified,
-                        $existing['bytes'] ?? $bytes,
-                        date('Y-m-d H:i:s', $existing['modified'] ?? $modified),
-                        $scan->seen,
-                        $existing['manual_tags'] ?? null,
-                        $existing['priority'] ?? 0
-                    ]);
-                    $mark->execute([$scan->seen, $id]);
-                    $processed++;
-                }
-                if ($finished) {
-                    array_pop($scan->directories);
-                }
-            }
-            $scan->progress->checked += $visited;
-            $scan->progress->changed += $processed;
-            if ($scan->directories === []) {
-                $missing = $this->database->prepare('UPDATE photos SET available = 0 WHERE seen <> ?');
-                $missing->execute([$scan->seen]);
-                $this->database->exec('DELETE FROM scan_state');
-            }
-            if ($scan->directories !== []) {
-                $save = $this->database->prepare('INSERT OR REPLACE INTO scan_state (id, state) VALUES (1, ?)');
-                $save->execute([json_encode($scan, JSON_THROW_ON_ERROR)]);
-            }
-            $this->database->commit();
-            $this->scanProgress = $scan->progress;
-            return $processed;
+            return $source->index();
         } finally {
-            if ($this->database->inTransaction()) {
-                $this->database->rollBack();
-            }
             flock($lock, LOCK_UN);
             fclose($lock);
         }
@@ -538,91 +299,19 @@ final class PhotoButler
     }
 
     /**
-     * Resolve source-validated images; internal cache-only checks trust the indexed source.
+     * Resolve cached thumbnails only; originals are streamed from OneDrive.
      */
-    public function imagePath(
-        int $id,
-        bool $original = false,
-        bool $animated = false,
-        bool $cachedOnly = false,
-        bool $generate = true
-    ): ?string {
-        $statement = $this->database->prepare(
-            'SELECT path, root, modified, bytes FROM photos WHERE id = ? AND available = 1'
-        );
-        $statement->execute([$id]);
-        $row = $statement->fetch();
-        $statement->closeCursor();
-        $remote = $this->oneDrive?->photo($id);
-        if ($this->oneDrive !== null && $remote === null) {
+    public function imagePath(int $id, bool $cachedOnly = false): ?string
+    {
+        $photo = $this->oneDrive?->photo($id);
+        if ($photo === null) {
             return null;
         }
-        if (!$row) {
+        $path = $this->dataPath . '/thumbnails/' . hash('sha256', $photo['path']) . '.jpg';
+        if (is_link($path)) {
             return null;
         }
-        $source = $row['path'];
-        if (
-            $remote === null &&
-            (!in_array($row['root'], $this->photoPaths(), true) ||
-                ((!$cachedOnly || $original) && (!is_file($source) || realpath($source) !== $source)) ||
-                !str_starts_with($row['path'], $row['root'] . '/'))
-        ) {
-            return null;
-        }
-        if ($original && $remote !== null) {
-            return null;
-        }
-        $path = $original ? $source : $this->dataPath . '/thumbnails/' . hash('sha256', $row['path']) . '.jpg';
-        if ($remote === null && !$original && !$cachedOnly && $generate && !is_file($path)) {
-            $lock = fopen($this->dataPath . '/thumbnail-' . $id % 2 . '.lock', 'c');
-            if ($lock === false || !flock($lock, LOCK_EX)) {
-                throw new \RuntimeException('Vorschauerstellung nicht verfügbar.');
-            }
-            try {
-                clearstatcache(true, $path);
-                if (!is_file($path)) {
-                    set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
-                        throw new \ErrorException($message, 0, $severity, $file, $line);
-                    });
-                    try {
-                        $metadata = $this->generateThumbnail($source, $path);
-                    } finally {
-                        restore_error_handler();
-                    }
-                    $save = $this->database->prepare(
-                        'UPDATE photos SET width = ?, height = ?, taken = ? WHERE id = ? AND modified = ? AND bytes = ? AND available = 1'
-                    );
-                    $save->execute([
-                        $metadata->width,
-                        $metadata->height,
-                        $metadata->taken,
-                        $id,
-                        $row['modified'],
-                        $row['bytes']
-                    ]);
-                    if ($save->rowCount() === 0) {
-                        unlink($path);
-                        if (is_file($path . '.webp')) {
-                            unlink($path . '.webp');
-                        }
-                        return null;
-                    }
-                }
-            } catch (\RuntimeException | \ErrorException | \JsonException) {
-                error_log('Vorschaubild konnte nicht erstellt werden für Foto ' . $id . '.');
-                return null;
-            } finally {
-                flock($lock, LOCK_UN);
-                fclose($lock);
-            }
-        }
-        if (!$original && is_link($path)) {
-            return null;
-        }
-        if (!$original && $animated && is_file($path . '.webp') && !is_link($path . '.webp')) {
-            return $path . '.webp';
-        }
-        if (!$original && !$cachedOnly && !is_file($path) && ($remote['preview_fallback'] ?? null) !== null) {
+        if (!$cachedOnly && !is_file($path) && $photo['preview_fallback'] !== null) {
             return dirname(__DIR__) . '/assets/favicon.svg';
         }
         return is_file($path) ? $path : null;
@@ -912,6 +601,22 @@ final class PhotoButler
             readfile(dirname(__DIR__) . '/assets/' . $asset);
             return;
         }
+        if (isset($_GET['cron'])) {
+            header('Content-Type: text/plain; charset=utf-8');
+            if (strlen($this->getSetting('CRON_SECRET')) < 32) {
+                http_response_code(503);
+                echo 'CRON_SECRET in .data/.env setzen (mindestens 32 Zeichen).';
+                return;
+            }
+            if (!is_string($_GET['cron']) || !hash_equals($this->getSetting('CRON_SECRET'), $_GET['cron'])) {
+                http_response_code(403);
+                return;
+            }
+            ignore_user_abort(true);
+            set_time_limit(300);
+            echo $this->jobs->cron();
+            return;
+        }
         session_name('photobutler');
         session_start([
             'use_strict_mode' => true,
@@ -1162,12 +867,7 @@ final class PhotoButler
         }
         if (isset($_GET['face'])) {
             $crop = $this->faces->crop((int) $_GET['face']);
-            if (
-                $crop === null ||
-                ($this->oneDrive !== null
-                    ? $this->oneDrive->photo((int) $crop['photo_id']) === null
-                    : $this->imagePath((int) $crop['photo_id'], cachedOnly: true) === null)
-            ) {
+            if ($crop === null || $this->oneDrive?->photo((int) $crop['photo_id']) === null) {
                 http_response_code(404);
                 return;
             }
@@ -1200,24 +900,13 @@ final class PhotoButler
                 );
                 return;
             }
-            $path = $this->imagePath(
-                (int) $_GET['photo'],
-                original: $original,
-                animated: ($_GET['size'] ?? '') === 'display',
-                generate: false
-            );
+            $path = $original ? null : $this->imagePath((int) $_GET['photo']);
             if ($path === null) {
                 http_response_code(404);
                 return;
             }
-            $video =
-                $original && in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), self::VIDEO_EXTENSIONS, true);
-            $bytes = filesize($path);
-            $modified = filemtime($path);
             if (!isset($_GET['download']) && in_array($_SERVER['REQUEST_METHOD'], ['GET', 'HEAD'], true)) {
-                $etag = $video
-                    ? 'W/"' . hash('sha256', $path . ':' . $modified . ':' . $bytes) . '"'
-                    : '"' . hash_file('sha256', $path) . '"';
+                $etag = '"' . hash_file('sha256', $path) . '"';
                 header_remove('Pragma');
                 header_remove('Expires');
                 header('Cache-Control: private, no-cache');
@@ -1227,65 +916,17 @@ final class PhotoButler
                     static fn(string $value): string => preg_replace('/^W\//', '', trim($value)),
                     explode(',', $_SERVER['HTTP_IF_NONE_MATCH'] ?? '')
                 );
-                if (
-                    in_array(preg_replace('/^W\//', '', $etag), $conditions, true) ||
-                    in_array('*', $conditions, true)
-                ) {
+                if (in_array($etag, $conditions, true) || in_array('*', $conditions, true)) {
                     http_response_code(304);
                     return;
                 }
             }
             header('Content-Type: ' . new \finfo(FILEINFO_MIME_TYPE)->file($path));
-            $start = 0;
-            $end = $bytes - 1;
-            if ($video) {
-                header('Accept-Ranges: bytes');
-                header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $modified) . ' GMT');
-                $range = $_SERVER['HTTP_RANGE'] ?? '';
-                $ifRange = $_SERVER['HTTP_IF_RANGE'] ?? '';
-                if ($range !== '' && ($ifRange === '' || strtotime($ifRange) === $modified)) {
-                    if (
-                        !preg_match('/^bytes=(\d*)-(\d*)$/D', $range, $match) ||
-                        ($match[1] === '' && $match[2] === '')
-                    ) {
-                        http_response_code(416);
-                        header('Content-Range: bytes */' . $bytes);
-                        return;
-                    }
-                    $start = $match[1] === '' ? max(0, $bytes - (int) $match[2]) : (int) $match[1];
-                    $end = $match[1] === '' || $match[2] === '' ? $bytes - 1 : min($bytes - 1, (int) $match[2]);
-                    if ($start > $end || $start >= $bytes) {
-                        http_response_code(416);
-                        header('Content-Range: bytes */' . $bytes);
-                        return;
-                    }
-                    http_response_code(206);
-                    header('Content-Range: bytes ' . $start . '-' . $end . '/' . $bytes);
-                }
-            }
-            header('Content-Length: ' . ($end - $start + 1));
+            header('Content-Length: ' . filesize($path));
             if (isset($_GET['download'])) {
                 header("Content-Disposition: attachment; filename*=UTF-8''" . rawurlencode(basename($path)));
             }
             if ($_SERVER['REQUEST_METHOD'] === 'HEAD') {
-                return;
-            }
-            if ($video) {
-                $stream = fopen($path, 'rb');
-                try {
-                    fseek($stream, $start);
-                    $remaining = $end - $start + 1;
-                    while ($remaining > 0 && !feof($stream) && !connection_aborted()) {
-                        $chunk = fread($stream, min(1048576, $remaining));
-                        if ($chunk === false || $chunk === '') {
-                            break;
-                        }
-                        echo $chunk;
-                        $remaining -= strlen($chunk);
-                    }
-                } finally {
-                    fclose($stream);
-                }
                 return;
             }
             readfile($path);
@@ -1450,126 +1091,6 @@ final class PhotoButler
         $faceState->execute([$photo->id, $row['modified'], $row['bytes'], FaceStore::MODEL]);
         $photo->face_status = $faceState->fetchColumn() ?: 'pending';
         return $photo;
-    }
-
-    /**
-     * Validate and deduplicate absolute source directories.
-     *
-     * @return list<string>
-     */
-    private function photoPaths(): array
-    {
-        $paths = json_decode($this->getSetting('PHOTO_PATHS'), true, flags: JSON_THROW_ON_ERROR);
-        if (!is_array($paths) || !array_is_list($paths) || $paths === []) {
-            throw new \RuntimeException('PHOTO_PATHS muss eine nicht leere JSON-Liste absoluter Ordnerpfade sein.');
-        }
-        foreach ($paths as $path) {
-            if (!is_string($path) || !str_starts_with($path, '/') || $path === '/') {
-                throw new \RuntimeException('PHOTO_PATHS muss eine nicht leere JSON-Liste absoluter Ordnerpfade sein.');
-            }
-        }
-        return array_values(array_unique(array_map(fn(string $path): string => rtrim($path, '/'), $paths)));
-    }
-
-    /**
-     * Apply orientation and strip metadata while leaving the original untouched.
-     */
-    private function generateThumbnail(string $source, string $target): \stdClass
-    {
-        if (in_array(strtolower(pathinfo($source, PATHINFO_EXTENSION)), self::VIDEO_EXTENSIONS, true)) {
-            return new VideoRenderer()->render($source, $target);
-        }
-        $header = file_get_contents($source, false, null, 0, 21);
-        if (
-            str_starts_with($header, "PK\x03\x04") ||
-            (strlen($header) === 21 &&
-                substr($header, 0, 4) === 'RIFF' &&
-                substr($header, 8, 8) === 'WEBPVP8X' &&
-                (ord($header[20]) & 2) !== 0)
-        ) {
-            return new StickerRenderer()->render($source, $target);
-        }
-        $size = getimagesize($source);
-        if (
-            $size === false ||
-            !in_array($size['mime'], ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], true) ||
-            $size[0] * $size[1] > ($size['mime'] === 'image/jpeg' ? self::MAX_JPEG_PIXELS : 60000000)
-        ) {
-            throw new \RuntimeException('Bild nicht lesbar, Format nicht unterstützt oder Pixelgrenze überschritten.');
-        }
-        try {
-            $exif = $size['mime'] === 'image/jpeg' ? exif_read_data($source) : [];
-        } catch (\ErrorException) {
-            $exif = [];
-        }
-        $orientation = (int) ($exif['Orientation'] ?? 1);
-        $width = in_array($orientation, [5, 6, 7, 8], true) ? $size[1] : $size[0];
-        $height = in_array($orientation, [5, 6, 7, 8], true) ? $size[0] : $size[1];
-        if ($size[0] * $size[1] > 60000000) {
-            $this->photoRenderer ??= new PhotoRenderer();
-        }
-        $renderPhoto = max($width, $height) > 640 && $this->photoRenderer !== null;
-        if ($renderPhoto) {
-            $this->photoRenderer->render(source: $source, target: $target, edge: 640, quality: 65);
-        }
-        if (!$renderPhoto) {
-            $image = match ($size['mime']) {
-                'image/jpeg' => imagecreatefromjpeg($source),
-                'image/png' => imagecreatefrompng($source),
-                'image/webp' => imagecreatefromwebp($source),
-                'image/gif' => imagecreatefromgif($source)
-            };
-            if ($image === false) {
-                throw new \RuntimeException(
-                    'Bild nicht lesbar, Format nicht unterstützt oder größer als 60 Megapixel.'
-                );
-            }
-            if (in_array($orientation, [2, 4, 5, 7], true)) {
-                imageflip($image, IMG_FLIP_HORIZONTAL);
-            }
-            $angle = match ($orientation) {
-                3, 4 => 180,
-                6, 7 => -90,
-                5, 8 => 90,
-                default => 0
-            };
-            if ($angle !== 0) {
-                $image = imagerotate($image, $angle, 0);
-            }
-            $width = imagesx($image);
-            $height = imagesy($image);
-            $scale = min(1, 640 / max($width, $height));
-            $thumbnail = imagecreatetruecolor(
-                max(1, (int) round($width * $scale)),
-                max(1, (int) round($height * $scale))
-            );
-            imagefill($thumbnail, 0, 0, imagecolorallocate($thumbnail, 246, 245, 241));
-            imagecopyresampled(
-                $thumbnail,
-                $image,
-                0,
-                0,
-                0,
-                0,
-                imagesx($thumbnail),
-                imagesy($thumbnail),
-                $width,
-                $height
-            );
-            if (!imagejpeg($thumbnail, $target . '.tmp', 65)) {
-                throw new \RuntimeException('Vorschaubild konnte nicht gespeichert werden.');
-            }
-            if (!rename($target . '.tmp', $target)) {
-                throw new \RuntimeException('Vorschaubild konnte nicht gespeichert werden.');
-            }
-        }
-        $date = \DateTimeImmutable::createFromFormat('!Y:m:d H:i:s', (string) ($exif['DateTimeOriginal'] ?? ''));
-        $taken = $date !== false ? $date->format('Y-m-d H:i:s') : date('Y-m-d H:i:s', filemtime($source));
-        $metadata = new \stdClass();
-        $metadata->width = $width;
-        $metadata->height = $height;
-        $metadata->taken = $taken;
-        return $metadata;
     }
 
     /**

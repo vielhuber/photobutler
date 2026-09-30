@@ -29,7 +29,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             for (let directory of ['.data', 'public', 'photos']) fs.mkdirSync(root + '/' + directory);
             fs.writeFileSync(
                 root + '/.data/.env',
-                `PHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\nAUTH_USERNAME=${credentials.username}\nAUTH_PASSWORD=${credentials.password}\nJWT_SECRET=isolated-relevance-signing-secret\n`
+                `AUTH_USERNAME=${credentials.username}\nAUTH_PASSWORD=${credentials.password}\nJWT_SECRET=isolated-relevance-signing-secret\n`
             );
             fs.writeFileSync(
                 root + '/public/index.php',
@@ -41,9 +41,13 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                     imagefill($image,0,0,imagecolorallocate($image,80+60*$priority,140,190));
                     imagejpeg($image,$root.'/photos/priority-'.$priority.'.jpg');
                 }
-                $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index();
-                $run=$library->jobs->start('previews');
-                while ($run['status'] === 'running') $run=$library->jobs->step('previews', $run['token']);
+            `);
+            execFileSync('php', [
+                project + '/tests/fixtures/seed-cloud.php',
+                root,
+                JSON.stringify({ directory: root + '/photos', thumbnails: true })
+            ]);
+            php(`$library=new \\vielhuber\\photobutler\\PhotoButler(${JSON.stringify(root)});
                 $library->database->exec("UPDATE photos SET priority=CASE name WHEN 'priority--1.jpg' THEN -1 WHEN 'priority-0.jpg' THEN 0 ELSE 1 END");
             `);
             let socket = net.createServer();

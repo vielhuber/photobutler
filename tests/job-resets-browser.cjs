@@ -27,13 +27,24 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         fs.mkdirSync(root + '/photos');
         fs.writeFileSync(
             root + '/.data/.env',
-            `PHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\nAUTH_USERNAME=reset-test\nAUTH_PASSWORD=isolated-reset-test\nJWT_SECRET=isolated-reset-test-signing-secret-123456\n`
+            `AUTH_USERNAME=reset-test\nAUTH_PASSWORD=isolated-reset-test\nJWT_SECRET=isolated-reset-test-signing-secret-123456\n`
         );
         fs.writeFileSync(
             root + '/public/index.php',
-            `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; ob_start(); (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run(); if (($_POST['action'] ?? '') === 'job-step') { usleep(250000); } ob_end_flush();`
+            `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();`
         );
-        database(`$image = imagecreatetruecolor(80, 60); imagejpeg($image, ${JSON.stringify(root + '/photos/b.jpg')}); imagefill($image, 0, 0, imagecolorallocate($image, 100, 0, 0)); imagejpeg($image, ${JSON.stringify(root + '/photos/c.jpg')}); $library->index(); $library->favorite(1, true); $library->saveTags(1, 'Manuell');
+        execFileSync('php', [
+            '-r',
+            `$image = imagecreatetruecolor(80, 60); imagejpeg($image, ${JSON.stringify(root + '/photos/b.jpg')}); imagefill($image, 0, 0, imagecolorallocate($image, 100, 0, 0)); imagejpeg($image, ${JSON.stringify(root + '/photos/c.jpg')});`
+        ]);
+        let seed = options =>
+            execFileSync('php', [
+                project + '/tests/fixtures/seed-cloud.php',
+                root,
+                JSON.stringify({ directory: root + '/photos', ...options })
+            ]);
+        seed({ thumbnails: true });
+        database(`$library->favorite(1, true); $library->saveTags(1, 'Manuell');
             $library->database->exec("UPDATE photos SET ai_tags = '[\\\"KI\\\"]', description = 'KI', status = 'done';
                 INSERT INTO persons (id, name) VALUES (1, 'Manuell'), (2, '');
                 INSERT INTO faces (id, photo_id, person_id, modified, bytes, model, box, embedding, crop, origin) SELECT id, id, id, modified, bytes, 'fixture', '[]', '[]', 'crop', CASE WHEN id = 1 THEN 'manual' ELSE 'auto' END FROM photos;
@@ -85,10 +96,6 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             await page.locator(`[data-job="${job}"] [data-job-action="reset"]`).click();
         }
         assert.equal(actions.length, 0);
-        await page.locator('[data-job="previews"] [data-job-action="start"]').click();
-        await page.waitForFunction(() =>
-            document.querySelector('[data-job="previews"] [data-job-status]').textContent.includes('Abgeschlossen')
-        );
         let thumbnails = JSON.parse(
             database(`echo json_encode(glob(${JSON.stringify(root + '/.data/thumbnails/*.jpg')}));`)
         ).filter(file => !file.includes('.detail.'));
@@ -153,7 +160,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         }
         assert.deepEqual(fs.readFileSync(root + '/photos/b.jpg'), original);
         fs.copyFileSync(root + '/photos/b.jpg', root + '/photos/a.jpg');
-        await page.locator('[data-job="scan"] [data-job-action="start"]').click();
+        seed({ job: 'scan' });
+        await page.reload();
         await page.waitForFunction(() =>
             document.querySelector('[data-job="scan"] [data-job-status]').textContent.includes('Abgeschlossen')
         );
@@ -165,10 +173,6 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             ).trim(),
             '["Manuell"]'
         );
-        assert.deepEqual(await (await context.request.get(url + '?photo=1&size=original&download=1')).body(), original);
-        let request = page.waitForRequest(request => request.postData()?.includes('job-step'));
-        await page.locator('[data-job="scan"] [data-job-action="start"]').click();
-        await request;
         page.once('dialog', dialog => dialog.accept());
         await page.locator('[data-job="scan"] [data-job-action="reset"]').click();
         await page.waitForFunction(() =>
@@ -179,17 +183,6 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             0
         );
         assert.equal(JSON.parse(database('echo json_encode($library->jobs->all());')).scan.status, 'idle');
-        for (let job of ['scan', 'previews', 'tag', 'faces']) {
-            await page.evaluate(job => {
-                document.querySelector(`[data-job="${job}"] [data-job-action="start"]`).click();
-                document.querySelector(`[data-job="${job}"] [data-job-action="pause"]`).click();
-            }, job);
-            await page.waitForFunction(
-                job => !document.querySelector(`[data-job="${job}"] [data-job-action="start"]`).disabled,
-                job
-            );
-            assert.equal(JSON.parse(database('echo json_encode($library->jobs->all());'))[job].status, 'paused');
-        }
         if (process.env.PHOTOBUTLER_BROWSER_ARTIFACTS)
             await page.screenshot({
                 path: process.env.PHOTOBUTLER_BROWSER_ARTIFACTS + '/reset-desktop.png',
@@ -213,7 +206,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         assert.deepEqual(errors, []);
         assert.deepEqual(external, []);
         console.log(
-            'PASS: real app, four confirmed resets/cancellation, CSRF rejection, isolated generated thumbnails/AI/face fixtures, protected metadata, reload, manual reimport, stable IDs/original download, in-flight response, independent starts/pauses, desktop/mobile. URL: ' +
+            'PASS: real app, four confirmed resets/cancellation, CSRF rejection, isolated generated thumbnails/AI/face fixtures, protected metadata, reload, cloud reimport with stable IDs, desktop/mobile. URL: ' +
                 url
         );
     } finally {

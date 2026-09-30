@@ -23,11 +23,13 @@ if (preg_match('/^[ \t]*(?:export[ \t]+)?AUTH_USERNAME[ \t]*=/m', file_get_conte
     file_put_contents($root . '/.data/.env', "\nAUTH_USERNAME=admin\n", FILE_APPEND);
 }
 $library = new \vielhuber\photobutler\PhotoButler($root);
-if ($library->getSetting('JWT_SECRET') === '') {
-    $envPath = $root . '/.data/.env';
-    $env = file_get_contents($envPath);
-    $env = preg_replace('/^[ \t]*(?:export[ \t]+)?JWT_SECRET[ \t]*=.*\R?/m', '', $env);
-    file_put_contents($envPath, rtrim($env) . "\nJWT_SECRET=" . bin2hex(random_bytes(32)) . "\n");
+foreach (['JWT_SECRET', 'CRON_SECRET'] as $secret) {
+    if ($library->getSetting($secret) === '') {
+        $envPath = $root . '/.data/.env';
+        $env = file_get_contents($envPath);
+        $env = preg_replace('/^[ \t]*(?:export[ \t]+)?' . $secret . '[ \t]*=.*\R?/m', '', $env);
+        file_put_contents($envPath, rtrim($env) . "\n" . $secret . '=' . bin2hex(random_bytes(32)) . "\n");
+    }
 }
 $entry = file_get_contents($package . '/public/index.php');
 $legacyEntry = str_replace(
@@ -41,4 +43,4 @@ if (!is_file($root . '/public/index.php') || file_get_contents($root . '/public/
 if (!is_file($root . '/public/.htaccess')) {
     copy($package . '/public/.htaccess', $root . '/public/.htaccess');
 }
-echo "photobutler initialized.\n1. Edit .data/.env (OneDrive API, AI and login credentials).\n2. Point your webserver to public/.\n3. Run photobutler-index --onedrive-login.\n4. Sign in and open Jobs for the PHP console commands.\n";
+echo "photobutler initialized.\n1. Edit .data/.env (OneDrive API, AI and login credentials).\n2. Point your webserver to public/.\n3. Run photobutler-index --onedrive-login.\n4. Call /?cron=CRON_SECRET from a cron job, or run the PHP console commands shown under Jobs.\n";

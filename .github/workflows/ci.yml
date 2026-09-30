@@ -16,7 +16,7 @@ jobs:
             - uses: shivammathur/setup-php@v2
               with:
                   php-version: '${{ matrix.php }}'
-                  extensions: pdo_sqlite, gd, exif, mbstring, curl, zip, fileinfo
+                  extensions: pdo_sqlite, gd, mbstring, curl, fileinfo
                   tools: composer
             - run: composer install --no-interaction --prefer-dist
             - run: composer validate --strict

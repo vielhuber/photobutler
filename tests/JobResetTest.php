@@ -6,25 +6,13 @@ use vielhuber\photobutler\PhotoButler;
 
 final class JobResetTest extends TestCase
 {
-    private string $root;
-    private PhotoButler $library;
+    use CloudFixture;
 
     protected function setUp(): void
     {
-        $this->root = sys_get_temp_dir() . '/photobutler-reset-' . bin2hex(random_bytes(8));
-        mkdir($this->root . '/photos', 0700, true);
-        mkdir($this->root . '/.data', 0700);
-        file_put_contents(
-            $this->root . '/.data/.env',
-            "PHOTO_PATHS='" . json_encode([$this->root . '/photos']) . "'\n"
-        );
-        $image = imagecreatetruecolor(80, 60);
-        foreach (['b', 'c'] as $name) {
-            imagejpeg($image, $this->root . '/photos/' . $name . '.jpg');
-            file_put_contents($this->root . '/photos/' . $name . '.jpg', $name, FILE_APPEND);
-        }
-        $this->library = new PhotoButler($this->root);
-        $this->library->index();
+        $this->createCloudLibrary();
+        $this->index([$this->item('b', 'b.jpg'), $this->item('c', 'c.jpg')]);
+        $this->library->oneDrive->previews([1, 2]);
         $this->library->favorite(1, true);
         $this->library->saveTags(1, 'Manuell');
         $this->library->saveTags(2, '');
@@ -41,42 +29,35 @@ final class JobResetTest extends TestCase
 
     protected function tearDown(): void
     {
-        unset($this->library);
-        foreach (
-            new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator($this->root, FilesystemIterator::SKIP_DOTS),
-                RecursiveIteratorIterator::CHILD_FIRST
-            )
-            as $file
-        ) {
-            $file->isDir() ? rmdir($file->getPathname()) : unlink($file->getPathname());
-        }
+        $this->removeCloudLibrary();
     }
 
     public function testCatalogResetRestoresIdentityAndManualMetadataAfterReloadAndManualImport(): void
     {
-        $original = file_get_contents($this->root . '/photos/b.jpg');
-        $thumbnail = $this->library->imagePath(1);
+        $thumbnail = $this->library->imagePath(1, cachedOnly: true);
         $cached = file_get_contents($thumbnail);
         $this->library->database->exec("INSERT INTO scan_state VALUES (1, '{}')");
         $otherJobs = $this->library->database->query("SELECT * FROM jobs WHERE job <> 'scan'")->fetchAll();
         $state = $this->library->jobs->reset('scan');
         self::assertSame('idle', $state['status']);
-        foreach (['photos', 'scan_state', 'import_files'] as $table) {
+        foreach (['photos', 'scan_state'] as $table) {
             self::assertSame(0, $this->library->database->query('SELECT COUNT(*) FROM ' . $table)->fetchColumn());
         }
         self::assertSame(
             $otherJobs,
             $this->library->database->query("SELECT * FROM jobs WHERE job <> 'scan'")->fetchAll()
         );
-        $this->library = new PhotoButler($this->root);
+        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
         self::assertSame([], $this->library->photos());
         self::assertSame(0, $this->library->jobs->all()['scan']['completed']);
-        copy($this->root . '/photos/b.jpg', $this->root . '/photos/a.jpg');
-        file_put_contents($this->root . '/photos/a.jpg', 'a', FILE_APPEND);
+        $this->client->pages[] = [
+            'value' => [$this->item('a', 'a.jpg')],
+            '@odata.deltaLink' =>
+                \vielhuber\photobutler\OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture'
+        ];
         $run = $this->library->jobs->start('scan');
         do {
-            $run = $this->library->jobs->step('scan', $run['token'], scanLimit: 1);
+            $run = $this->library->jobs->step('scan', $run['token']);
         } while ($run['status'] === 'running');
         self::assertSame('done', $run['status']);
         self::assertTrue($this->library->photo(1)->favorite);
@@ -89,13 +70,14 @@ final class JobResetTest extends TestCase
             $this->library->database->query('SELECT manual_tags FROM photos WHERE id = 2')->fetchColumn()
         );
         self::assertSame('a.jpg', $this->library->photo(3)->name);
-        self::assertSame($original, file_get_contents($this->library->imagePath(1, original: true)));
+        self::assertSame($thumbnail, $this->library->imagePath(1, cachedOnly: true));
         self::assertSame($cached, file_get_contents($thumbnail));
+        self::assertSame(['b', 'c'], $this->client->downloads);
         self::assertSame(2, $this->library->database->query('SELECT COUNT(*) FROM faces')->fetchColumn());
         $this->library->favorite(1, false);
         $this->library->saveTags(1, 'Korrigiert');
         $this->library->jobs->reset('scan');
-        $this->library->index();
+        $this->index([]);
         self::assertFalse($this->library->photo(1)->favorite);
         self::assertSame(
             '["Korrigiert"]',
@@ -105,8 +87,7 @@ final class JobResetTest extends TestCase
 
     public function testEachResetClearsOnlyItsDataAndInvalidatesItsRun(): void
     {
-        $original = file_get_contents($this->root . '/photos/b.jpg');
-        $thumbnail = $this->library->imagePath(1);
+        $thumbnail = $this->library->imagePath(1, cachedOnly: true);
         file_put_contents($thumbnail . '.webp', 'animated fixture');
         file_put_contents($thumbnail . '.detail.jpg', 'legacy medium fixture');
         foreach (['previews', 'tag', 'faces'] as $job) {
@@ -126,14 +107,14 @@ final class JobResetTest extends TestCase
                 $this->library->database->query("SELECT * FROM jobs WHERE job <> '$job'")->fetchAll()
             );
             self::assertSame('idle', $this->library->jobs->step($job, $run['token'])['status']);
-            $this->library = new PhotoButler($this->root);
+            $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
             self::assertSame('idle', $this->library->jobs->all()[$job]['status']);
             self::assertTrue($this->library->photo(1)->favorite);
             self::assertSame(
                 '["Manuell"]',
                 $this->library->database->query('SELECT manual_tags FROM photos WHERE id = 1')->fetchColumn()
             );
-            self::assertSame($original, file_get_contents($this->root . '/photos/b.jpg'));
+            self::assertSame(['b', 'c'], $this->client->downloads);
             if ($job === 'previews') {
                 self::assertFileDoesNotExist($thumbnail);
                 self::assertFileDoesNotExist($thumbnail . '.webp');
@@ -166,18 +147,13 @@ final class JobResetTest extends TestCase
 
     public function testTemporarilyMissingPhotosKeepTheirMetadataAndStickerOriginalsSurviveAllResets(): void
     {
-        $original = file_get_contents($this->root . '/photos/b.jpg');
-        $image = imagecreatetruecolor(32, 32);
-        imagewebp($image, $this->root . '/photos/sticker.webp');
-        $sticker = file_get_contents($this->root . '/photos/sticker.webp');
-        $this->library->index();
+        $sticker = ['file' => ['mimeType' => 'image/webp']] + $this->item('sticker', 'sticker.webp');
+        $this->index([$sticker]);
         $this->library->jobs->reset('scan');
-        unlink($this->root . '/photos/b.jpg');
-        $this->library->index();
+        $this->index([['id' => 'b', 'deleted' => []]]);
         self::assertNull($this->library->photo(1));
         $this->library->jobs->reset('scan');
-        file_put_contents($this->root . '/photos/b.jpg', $original);
-        $this->library->index();
+        $this->index([$this->item('b', 'b.jpg')]);
         self::assertTrue($this->library->photo(1)->favorite);
         self::assertSame(
             '["Manuell"]',
@@ -186,7 +162,8 @@ final class JobResetTest extends TestCase
         foreach (['previews', 'tag', 'faces'] as $job) {
             $this->library->jobs->reset($job);
         }
-        self::assertSame($sticker, file_get_contents($this->library->imagePath(3, original: true)));
+        self::assertSame('sticker.webp', $this->library->photo(3)->name);
+        self::assertSame(['b', 'c'], $this->client->downloads);
     }
 
     public function testInFlightResourceLocksRejectResetsWithoutChangingDataOrJobs(): void

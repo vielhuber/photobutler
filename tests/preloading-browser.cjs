@@ -21,7 +21,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         for (let directory of ['.data', 'public', 'photos']) fs.mkdirSync(root + '/' + directory);
         fs.writeFileSync(
             root + '/.data/.env',
-            `PHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\nAUTH_USERNAME=preload-test\nAUTH_PASSWORD=isolated-preload-test\nJWT_SECRET=isolated-preload-test-signing-secret\n`
+            `AUTH_USERNAME=preload-test\nAUTH_PASSWORD=isolated-preload-test\nJWT_SECRET=isolated-preload-test-signing-secret\n`
         );
         fs.writeFileSync(
             root + '/public/index.php',
@@ -33,9 +33,12 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             $root=${JSON.stringify(root)};
             $image=imagecreatetruecolor(640,480); imagefilledrectangle($image,0,0,639,479,0x338877);
             for($i=1;$i<=66;$i++) { imagefilledrectangle($image,0,0,15,15,imagecolorallocate($image,$i*3,0,0)); imagejpeg($image,$root.'/photos/photo-'.sprintf('%02d',$i).'.jpg',85); }
-            $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index();
-            foreach($library->database->query('SELECT id FROM photos')->fetchAll() as $row) { $library->imagePath((int)$row['id']); }
         `
+        ]);
+        execFileSync('php', [
+            project + '/tests/fixtures/seed-cloud.php',
+            root,
+            JSON.stringify({ directory: root + '/photos', thumbnails: true })
         ]);
         let originals = fs.readdirSync(root + '/photos').map(name => [name, fs.readFileSync(root + '/photos/' + name)]);
         let socket = net.createServer();

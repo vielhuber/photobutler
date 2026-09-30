@@ -7,108 +7,70 @@ use vielhuber\photobutler\PhotoButler;
 
 final class OnDemandTest extends TestCase
 {
-    private string $root;
-    private PhotoButler $library;
+    use CloudFixture;
 
     protected function setUp(): void
     {
-        $this->root = sys_get_temp_dir() . '/photobutler-ondemand-' . bin2hex(random_bytes(8));
-        mkdir($this->root . '/photos', 0700, true);
-        mkdir($this->root . '/.data', 0700);
-        file_put_contents(
-            $this->root . '/.data/.env',
-            "PHOTO_PATHS='" .
-                json_encode([$this->root . '/photos']) .
-                "'\nAI_PROVIDER=cliproxyapi\nAI_MODEL=fixture\nAI_BASE_URL=http://127.0.0.1:1\nAI_API_KEY=fixture\n"
+        $this->createCloudLibrary(
+            "AI_PROVIDER=cliproxyapi\nAI_MODEL=fixture\nAI_BASE_URL=http://127.0.0.1:1\nAI_API_KEY=fixture\n"
         );
-        imagejpeg(imagecreatetruecolor(80, 60), $this->root . '/photos/a.jpg');
-        $this->library = new PhotoButler($this->root);
+        $this->index([$this->item('a', 'a.jpg')]);
     }
 
     protected function tearDown(): void
     {
-        unset($this->library);
-        foreach (
-            new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator($this->root, FilesystemIterator::SKIP_DOTS),
-                RecursiveIteratorIterator::CHILD_FIRST
-            )
-            as $file
-        ) {
-            $file->isDir() ? rmdir($file->getPathname()) : unlink($file->getPathname());
-        }
-        rmdir($this->root);
-    }
-
-    public function testImportNeverReadsContentsAndSeparatesIdenticalFilesByRelativePath(): void
-    {
-        mkdir($this->root . '/photos/other');
-        $source = $this->root . '/photos/a.jpg';
-        $copy = $this->root . '/photos/other/a.jpg';
-        copy($source, $copy);
-        foreach ([$source, $copy] as $path) {
-            touch($path, time(), 1);
-        }
-        $this->assertSame(2, $this->library->index());
-        $this->assertSame(2, (int) $this->library->importProgress(true)['completed']);
-        $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM photo_hashes')->fetchColumn());
-        clearstatcache();
-        foreach ([$source, $copy] as $path) {
-            $this->assertSame(1, fileatime($path));
-        }
-        $thumbnail = $this->library->imagePath(1);
-        $cached = file_get_contents($thumbnail);
-        file_put_contents($source, 'different content at the same path');
-        touch($source, time() + 10, 1);
-        $this->assertSame(0, $this->library->index());
-        $this->assertSame($cached, file_get_contents($thumbnail));
-        clearstatcache();
-        $this->assertSame(1, fileatime($source));
+        $this->removeCloudLibrary();
     }
 
     public function testMissingThumbnailsNeverCauseAnalysisToLoadOriginals(): void
     {
-        $source = $this->root . '/photos/a.jpg';
-        $this->library->index();
-        touch($source, time(), 1);
         $this->assertSame(0, $this->library->tag(1));
         $this->assertSame(0, $this->library->tagFaces(1));
         $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
-        clearstatcache();
-        $this->assertSame(1, fileatime($source));
+        $this->assertSame([], $this->client->downloads);
         $this->assertSame('error', $this->library->photo(1)->status);
         $this->assertSame('error', $this->library->photo(1)->face_status);
     }
 
     public function testFaceProcessReceivesCachedThumbnailEvenWhenOriginalIsAbsent(): void
     {
-        $this->library->index();
-        $thumbnail = $this->library->imagePath(1);
-        unlink($this->root . '/photos/a.jpg');
-        mkdir($this->root . '/.data/face-runtime/bin', 0700, true);
-        $python = $this->root . '/.data/face-runtime/bin/python';
+        $this->library->oneDrive->previews([1]);
+        $thumbnail = $this->library->imagePath(1, cachedOnly: true);
+        mkdir($this->root . '/.data/face-runtime/packages/cv2', 0700, true);
+        mkdir($this->root . '/.data/face-runtime/models', 0700);
+        mkdir($this->root . '/bin', 0700);
+        $python = $this->root . '/bin/python3.12';
         file_put_contents(
             $python,
             '#!' .
                 PHP_BINARY .
-                "\n<?php\nfile_put_contents(__DIR__ . '/input', \$argv[2]); echo '{\"status\":\"done\",\"faces\":[]}';"
+                "\n<?php\nfile_put_contents(__DIR__ . '/input', \$argv[2] . '|' . getenv('PYTHONPATH')); echo '{\"status\":\"done\",\"faces\":[]}';"
         );
         chmod($python, 0700);
-        $this->assertSame(1, $this->library->tagFaces(1));
-        $this->assertSame($thumbnail, file_get_contents(dirname($python) . '/input'));
+        $path = getenv('PATH');
+        putenv('PATH=' . $this->root . '/bin:' . $path);
+        try {
+            $this->assertSame(1, $this->library->tagFaces(1));
+        } finally {
+            putenv('PATH=' . $path);
+        }
+        $this->assertSame(
+            $thumbnail . '|' . $this->root . '/.data/face-runtime/packages',
+            file_get_contents(dirname($python) . '/input')
+        );
         $this->assertSame('done', $this->library->photo(1)->face_status);
         $this->assertSame(0, $this->library->tagFaces(1));
+        $this->assertSame(['a'], $this->client->downloads);
     }
 
     #[TestWith(['jpeg'])]
     #[TestWith(['png'])]
     public function testAiGatewayReceivesOnlyTheCachedThumbnail(string $format): void
     {
-        $this->library->index();
-        $thumbnail = $this->library->imagePath(1);
+        $this->library->oneDrive->previews([1]);
+        $thumbnail = $this->library->imagePath(1, cachedOnly: true);
         ('image' . $format)(imagecreatetruecolor(80, 60), $thumbnail);
         $encoded = base64_encode(file_get_contents($thumbnail));
-        unlink($this->root . '/photos/a.jpg');
         $socket = stream_socket_server('tcp://127.0.0.1:0');
         $address = stream_socket_get_name($socket, false);
         fclose($socket);
@@ -127,7 +89,7 @@ final class OnDemandTest extends TestCase
             PHP
         );
         file_put_contents($this->root . '/.data/.env', "\nAI_BASE_URL=http://" . $address . "/v1\n", FILE_APPEND);
-        $this->library = new PhotoButler($this->root);
+        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
         $process = proc_open(
             [PHP_BINARY, '-S', $address, $router],
             [1 => ['file', $this->root . '/gateway.log', 'w'], 2 => ['file', $this->root . '/gateway.log', 'a']],
@@ -153,6 +115,7 @@ final class OnDemandTest extends TestCase
             }
             $this->assertSame(['data:image/' . $format . ';base64,' . $encoded], $images);
             $this->assertSame(['Fixture'], $this->library->photo(1)->tags);
+            $this->assertSame(['a'], $this->client->downloads);
         } finally {
             proc_terminate($process);
             proc_close($process);
@@ -161,8 +124,8 @@ final class OnDemandTest extends TestCase
 
     public function testAnimationAloneDoesNotReplaceTheStaticAnalysisThumbnail(): void
     {
-        $this->library->index();
-        $thumbnail = $this->root . '/.data/thumbnails/' . hash('sha256', $this->root . '/photos/a.jpg') . '.jpg';
+        $path = $this->library->database->query('SELECT path FROM photos WHERE id = 1')->fetchColumn();
+        $thumbnail = $this->root . '/.data/thumbnails/' . hash('sha256', $path) . '.jpg';
         file_put_contents($thumbnail . '.webp', 'cached animation');
         $run = $this->library->jobs->start('previews');
         $this->assertSame('done', $this->library->jobs->step('previews', $run['token'])['status']);

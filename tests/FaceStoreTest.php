@@ -8,43 +8,22 @@ use vielhuber\photobutler\PhotoButler;
 
 final class FaceStoreTest extends TestCase
 {
-    private string $root;
-    private PhotoButler $library;
+    use CloudFixture;
+
+    private function photoItems(int $count): array
+    {
+        return array_map(fn(int $number): array => $this->item((string) $number, $number . '.jpg'), range(1, $count));
+    }
 
     protected function setUp(): void
     {
-        $this->root = sys_get_temp_dir() . '/photobutler-faces-' . bin2hex(random_bytes(8));
-        mkdir($this->root . '/photos', 0700, true);
-        mkdir($this->root . '/.data', 0700);
-        file_put_contents(
-            $this->root . '/.data/.env',
-            "PHOTO_PATHS='" . json_encode([$this->root . '/photos']) . "'\n"
-        );
-        for ($index = 1; $index <= 4; $index++) {
-            imagejpeg(imagecreatetruecolor(80, 60), $this->root . '/photos/' . $index . '.jpg');
-            file_put_contents($this->root . '/photos/' . $index . '.jpg', (string) $index, FILE_APPEND);
-        }
-        $this->library = new PhotoButler($this->root);
-        $this->library->index();
+        $this->createCloudLibrary();
+        $this->index($this->photoItems(4));
     }
 
     protected function tearDown(): void
     {
-        unset($this->library);
-        foreach (
-            new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator($this->root, FilesystemIterator::SKIP_DOTS),
-                RecursiveIteratorIterator::CHILD_FIRST
-            )
-            as $file
-        ) {
-            if ($file->isDir() && !$file->isLink()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-        rmdir($this->root);
+        $this->removeCloudLibrary();
     }
 
     private function photo(int $id): array
@@ -61,7 +40,7 @@ final class FaceStoreTest extends TestCase
             $face = new stdClass();
             $face->box = [0.1 + $index * 0.3, 0.1, 0.2, 0.2];
             $face->embedding = array_pad($vector, 128, 0.0);
-            $face->crop = base64_encode(file_get_contents($this->root . '/photos/1.jpg'));
+            $face->crop = base64_encode($this->client->jpeg);
             $result->faces[] = $face;
         }
         return $result;
@@ -235,7 +214,6 @@ final class FaceStoreTest extends TestCase
     {
         $store = $this->library->faces;
         $photo = $this->photo(1);
-        $hash = hash_file('sha256', $photo['path']);
         $store->save($photo, $this->analysisResult([[1.0], [0.0, 1.0]]));
         $store->correct('rename', 1, 'Alex');
         $store->correct('split', 2);
@@ -262,7 +240,7 @@ final class FaceStoreTest extends TestCase
         $this->assertSame(0, $reset['attempted']);
         $this->assertSame('["Manuell"]', $reset['manual_tags']);
         $this->assertSame(1, $reset['priority']);
-        $this->assertSame($hash, hash_file('sha256', $photo['path']));
+        $this->assertSame([], $this->client->downloads);
         $this->assertSame(4, $this->library->resetAnalysis());
     }
 
@@ -346,7 +324,7 @@ final class FaceStoreTest extends TestCase
         $this->library->database->exec('UPDATE photos SET modified = modified + 5 WHERE id = 1');
         $store->reset(1, false);
         $this->assertFalse($store->save($photo, $this->analysisResult([[1.0]])));
-        $this->library->index();
+        $this->index($this->photoItems(4));
         $this->assertTrue($store->save($this->photo(1), $this->analysisResult([[0.0, 1.0]])));
         $this->assertSame(0, $store->personFaces(1)[0]['current']);
         $this->assertSame('manual', $store->personFaces(1)[0]['origin']);
@@ -363,16 +341,11 @@ final class FaceStoreTest extends TestCase
         $this->library->saveTags(1, 'Test');
         $this->assertCount(
             1,
-            $this->library->photos(query: '1', album: 'photos', tag: 'Test', favorites: true, person: 1)
+            $this->library->photos(query: '1', album: 'FOTOS', tag: 'Test', favorites: true, person: 1)
         );
         $this->assertCount(0, $this->library->photos(tag: 'Andere', person: 1));
         $this->assertCount(0, $this->library->photos(person: 999));
-        for ($number = 5; $number <= 70; $number++) {
-            $path = $this->root . '/photos/' . $number . '.jpg';
-            copy($this->root . '/photos/1.jpg', $path);
-            file_put_contents($path, (string) $number, FILE_APPEND);
-        }
-        $this->library->index();
+        $this->index($this->photoItems(70));
         foreach ($this->library->database->query('SELECT * FROM photos WHERE id >= 5')->fetchAll() as $photo) {
             $store->save($photo, $this->analysisResult([[1.0]]));
         }
@@ -417,8 +390,6 @@ final class FaceStoreTest extends TestCase
         $this->assertSame(1, $this->library->photo(1)->persons[0]['id']);
         $this->assertSame(2, $this->library->photo(2)->persons[0]['id']);
         $this->library->database->exec("UPDATE photos SET status = 'done'");
-        $photo = $this->photo(3);
-        unlink($photo['path']);
         $this->assertSame(0, $this->library->tagFaces(1));
         $state = $this->library->database->query('SELECT * FROM face_state WHERE photo_id = 3')->fetch();
         $this->assertSame('error', $state['status']);
@@ -458,9 +429,9 @@ final class FaceStoreTest extends TestCase
         }
         symlink($runtime, $this->root . '/.data/face-runtime');
         $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Unverändert\"]'");
-        $hash = hash_file('sha256', $this->photo(1)['path']);
+        $this->library->oneDrive->previews(range(1, 4));
         foreach (range(1, 4) as $id) {
-            $this->assertNotNull($this->library->imagePath($id));
+            $this->assertNotNull($this->library->imagePath($id, cachedOnly: true));
         }
         imagepng(imagecreatetruecolor(80, 60), $this->library->imagePath(1, cachedOnly: true));
         $this->assertSame(4, $this->library->tagFaces(4));
@@ -472,13 +443,8 @@ final class FaceStoreTest extends TestCase
                 ->fetchColumn()
         );
         $this->assertSame(['Unverändert'], $this->library->photo(1)->tags);
-        $this->assertSame($hash, hash_file('sha256', $this->photo(1)['path']));
-        $archive = new ZipArchive();
-        $source = $this->root . '/photos/unsupported.webp';
-        $archive->open($source, ZipArchive::CREATE);
-        $archive->addFromString('unrelated.txt', 'unsupported sticker');
-        $archive->close();
-        $this->library->index();
+        $this->assertSame(['1', '2', '3', '4'], $this->client->downloads);
+        $this->index($this->photoItems(5));
         $this->library->database->exec("UPDATE photos SET status = 'done'");
         $this->assertSame(0, $this->library->tagFaces(1));
         $this->assertSame('error', $this->library->photo(5)->face_status);

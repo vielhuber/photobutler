@@ -11,6 +11,15 @@ final class FaceAnalyzer
     public function __construct(private readonly string $dataPath) {}
 
     /**
+     * Treat faces as optional: the pinned packages live in private storage, not in a virtualenv.
+     */
+    public function installed(): bool
+    {
+        return is_dir($this->dataPath . '/face-runtime/packages/cv2') &&
+            is_dir($this->dataPath . '/face-runtime/models');
+    }
+
+    /**
      * Analyze only an existing static JPEG or PNG thumbnail, never render or open an original.
      */
     public function analyze(string $source): \stdClass
@@ -23,20 +32,25 @@ final class FaceAnalyzer
         ) {
             throw new \RuntimeException('Statisches Thumbnail für Gesichtsanalyse erforderlich.');
         }
-        if (!is_executable($this->dataPath . '/face-runtime/bin/python')) {
+        if (!$this->installed()) {
             throw new \RuntimeException('Lokale Gesichtsanalyse nicht installiert.');
         }
         $process = null;
         try {
             $process = proc_open(
                 [
-                    $this->dataPath . '/face-runtime/bin/python',
+                    'python3.12',
                     dirname(__DIR__) . '/scripts/analyze-faces.py',
                     $source,
                     $this->dataPath . '/face-runtime/models'
                 ],
                 [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']],
-                $pipes
+                $pipes,
+                null,
+                array_replace(getenv(), [
+                    'PYTHONPATH' => $this->dataPath . '/face-runtime/packages',
+                    'PYTHONNOUSERSITE' => '1'
+                ])
             );
             if ($process === false) {
                 throw new \RuntimeException('Lokale Gesichtsanalyse nicht verfügbar.');

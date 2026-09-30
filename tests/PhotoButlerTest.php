@@ -2,55 +2,51 @@
 declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
+use vielhuber\photobutler\OneDriveClient;
 use vielhuber\photobutler\PhotoButler;
 
 final class PhotoButlerTest extends TestCase
 {
-    private string $root;
-    private PhotoButler $library;
+    use CloudFixture;
 
     protected function setUp(): void
     {
-        $this->root = sys_get_temp_dir() . '/photobutler-' . bin2hex(random_bytes(8));
-        mkdir($this->root . '/photos/Urlaub', 0700, true);
-        mkdir($this->root . '/.data', 0700);
-        file_put_contents(
-            $this->root . '/.data/.env',
-            "PHOTO_PATHS='" .
-                json_encode([$this->root . '/photos']) .
-                "'\nAUTH_USERNAME=test-user\nAUTH_PASSWORD=test-password\nJWT_SECRET=photobutler-test-signing-secret-32-bytes\n"
+        $this->createCloudLibrary(
+            "AUTH_USERNAME=test-user\nAUTH_PASSWORD=test-password\nJWT_SECRET=photobutler-test-signing-secret-32-bytes\nCRON_SECRET=photobutler-test-cron-secret-with-32-bytes\n"
         );
-        $image = imagecreatetruecolor(80, 60);
-        imagejpeg($image, $this->root . '/photos/Urlaub/Meer.jpg');
-        $this->library = new PhotoButler($this->root);
-    }
-
-    private function copyDistinctPhoto(string $source, string $target): void
-    {
-        copy($source, $target);
-        file_put_contents($target, basename($target), FILE_APPEND);
     }
 
     protected function tearDown(): void
     {
-        unset($this->library);
-        $files = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($this->root, FilesystemIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::CHILD_FIRST
-        );
-        foreach ($files as $file) {
-            if ($file->isDir() && !$file->isLink()) {
-                rmdir($file->getPathname());
-                continue;
-            }
-            unlink($file->getPathname());
-        }
-        rmdir($this->root);
+        $this->removeCloudLibrary();
+    }
+
+    private function indexMeer(): int
+    {
+        $this->index([$this->folder('urlaub', 'Urlaub'), $this->item('meer', 'Meer.jpg', 'urlaub')]);
+        return 1;
+    }
+
+    private function queue(array $items, bool $complete = true): void
+    {
+        $this->client->pages[] = [
+            'value' => [['id' => 'root', 'name' => 'FOTOS', 'folder' => []], ...$items],
+            ...$complete
+                ? ['@odata.deltaLink' => OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture']
+                : ['@odata.nextLink' => OneDriveClient::GRAPH . '/next']
+        ];
+    }
+
+    private function thumbnailPath(int $id): string
+    {
+        $statement = $this->library->database->prepare('SELECT path FROM photos WHERE id = ?');
+        $statement->execute([$id]);
+        return $this->root . '/.data/thumbnails/' . hash('sha256', $statement->fetchColumn()) . '.jpg';
     }
 
     public function testPriorityMigrationRetainsFavoritesAndOnlyExcludesNeutralEntriesOnce(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $database = $this->library->database;
         $database->exec("ALTER TABLE photos RENAME COLUMN priority TO favorite;
             ALTER TABLE photo_metadata RENAME COLUMN priority TO favorite;
@@ -87,25 +83,19 @@ final class PhotoButlerTest extends TestCase
 
     public function testImportAssignsExclusionsAndRetainsManualPriorityAndCaches(): void
     {
-        $source = $this->root . '/photos/Urlaub/Meer.jpg';
-        foreach (
-            [
-                'old.jpg',
-                '_WHATSAPP/.Statuses/story.jpg',
-                '_WHATSAPP/WhatsApp Animated Gifs/animation.gif',
-                '_WHATSAPP/WhatsApp Images/other.GIF',
-                'ordinary.gif'
-            ]
-            as $path
-        ) {
-            $target = $this->root . '/photos/' . $path;
-            if (!is_dir(dirname($target))) {
-                mkdir(dirname($target), 0700, true);
-            }
-            $this->copyDistinctPhoto($source, $target);
-            touch($target, strtotime($path === 'old.jpg' ? '2022-12-31' : '2024-01-01'));
-        }
-        $this->library->index();
+        $this->index([
+            $this->folder('urlaub', 'Urlaub'),
+            $this->folder('whatsapp', '_WHATSAPP'),
+            $this->folder('statuses', '.Statuses', 'whatsapp'),
+            $this->folder('animated', 'WhatsApp Animated Gifs', 'whatsapp'),
+            $this->folder('images', 'WhatsApp Images', 'whatsapp'),
+            $this->item('meer', 'Meer.jpg', 'urlaub'),
+            $this->item('old', 'old.jpg', modified: '2022-12-31T12:00:00Z'),
+            $this->item('story', 'story.jpg', 'statuses', modified: '2024-01-01T12:00:00Z'),
+            $this->item('animation', 'animation.gif', 'animated', modified: '2024-01-01T12:00:00Z'),
+            $this->item('other', 'other.GIF', 'images', modified: '2024-01-01T12:00:00Z'),
+            $this->item('ordinary', 'ordinary.gif', modified: '2024-01-01T12:00:00Z')
+        ]);
         $priorities = $this->library->database
             ->query('SELECT name, priority FROM photos')
             ->fetchAll(PDO::FETCH_KEY_PAIR);
@@ -114,30 +104,31 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(-1, $priorities['animation.gif']);
         $this->assertSame(-1, $priorities['other.GIF']);
         $this->assertSame(0, $priorities['ordinary.gif']);
+        $this->assertSame(0, $priorities['Meer.jpg']);
         $excluded = $this->library->database
             ->query('SELECT id FROM photos WHERE priority = -1')
             ->fetchAll(PDO::FETCH_COLUMN);
         foreach ($excluded as $id) {
             $this->library->priority((int) $id, 1);
         }
-        touch($this->root . '/photos/old.jpg', strtotime('2022-12-30'));
-        $this->library->index();
+        $this->index([$this->item('old', 'old.jpg', version: 'v2', modified: '2022-12-30T12:00:00Z')]);
         $this->assertCount(4, $this->library->photos(favorites: true));
         $photo = $this->library->photos(album: 'Urlaub')[0];
+        $this->library->oneDrive->previews([$photo->id]);
         $cache = $this->library->imagePath($photo->id);
         $hash = hash_file('sha256', $cache);
         $this->library->priority($photo->id, -1);
-        $this->library->index();
+        $this->index([]);
         $this->assertSame(-1, $this->library->photo($photo->id)->priority);
         $this->assertSame($hash, hash_file('sha256', $cache));
         $this->library->jobs->reset('scan');
-        $this->library->index();
+        $this->index([]);
         $this->assertSame(-1, $this->library->photo($photo->id)->priority);
         $this->assertCount(4, $this->library->photos(favorites: true));
         foreach ($excluded as $id) {
             $this->library->priority((int) $id, 0);
         }
-        $this->library->index();
+        $this->index([]);
         foreach ($excluded as $id) {
             $this->assertSame(-1, $this->library->photo((int) $id)->priority);
         }
@@ -145,7 +136,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testVisibilityFiltersCombineWithPriorityAndFavoriteFilters(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $id = $this->library->photos()[0]->id;
         foreach ([-1, 0, 1] as $priority) {
             $this->library->priority($id, $priority);
@@ -170,7 +161,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testPriorityIsExclusiveAndValidated(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $id = $this->library->photos()[0]->id;
         foreach ([-1, 0, 1] as $priority) {
             $this->library->priority($id, $priority);
@@ -185,7 +176,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testJobLogsAreIndependentBoundedPersistentAndResetWithTheirJob(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $jobs = $this->library->jobs;
         foreach (array_keys(\vielhuber\photobutler\JobRunner::LABELS) as $job) {
             $this->assertSame([], $jobs->all()[$job]['log']);
@@ -242,6 +233,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testEachJobLogsItsOwnProcessingPhaseAndOutcome(): void
     {
+        $this->queue([$this->folder('urlaub', 'Urlaub'), $this->item('meer', 'Meer.jpg', 'urlaub')]);
         $jobs = $this->library->jobs;
         foreach (
             ['scan' => 'Galerieabschnitt', 'tag' => 'KI-Verschlagwortung', 'faces' => 'analysiere Gesichter']
@@ -265,6 +257,7 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame('idle', $jobs->all()['scan']['status']);
         $this->assertSame(0, $jobs->step('scan', 'not-started')['completed']);
         $this->assertCount(0, $this->library->photos());
+        $this->queue([$this->folder('urlaub', 'Urlaub'), $this->item('meer', 'Meer.jpg', 'urlaub')]);
         $scan = $jobs->start('scan');
         $jobs->pause('scan');
         $jobs->step('scan', $scan['token']);
@@ -278,6 +271,7 @@ final class PhotoButlerTest extends TestCase
         }
         $this->assertSame('pending', $this->library->photo(1)->status);
         $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM face_state')->fetchColumn());
+        $this->assertSame([], $this->client->downloads);
         $previews = $jobs->start('previews');
         $lock = fopen($this->root . '/.data/cli-previews.lock', 'c');
         $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
@@ -292,7 +286,6 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(100, $previews['percent']);
         $this->assertSame('done', $previews['status']);
         $this->assertFileExists($this->library->imagePath(1));
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.detail*'));
         $reopened = new PhotoButler($this->root);
         $this->assertSame('done', $reopened->jobs->all()['previews']['status']);
         $this->assertSame('paused', $reopened->jobs->all()['tag']['status']);
@@ -300,7 +293,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testJobStatusRequiresAnActiveCliLockWithoutChangingPersistedCheckpoints(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $this->library->database->exec("UPDATE jobs SET status = 'running', token = 'private-run', completed = 1");
         $before = $this->library->database->query('SELECT * FROM jobs')->fetchAll();
         foreach (['scan', 'previews', 'tag', 'faces'] as $job) {
@@ -326,10 +319,8 @@ final class PhotoButlerTest extends TestCase
 
     public function testThumbnailFailuresCanRetryImmediatelyDespiteRecentTagErrors(): void
     {
-        $this->library->index();
-        $path = $this->root . '/photos/Urlaub/Meer.jpg';
-        $original = file_get_contents($path);
-        file_put_contents($path, '');
+        $this->indexMeer();
+        $this->client->invalidThumbnails = ['meer'];
         $this->library->database->exec("UPDATE photos SET status = 'error', attempted = " . time());
         $jobs = $this->library->jobs;
         $tag = $jobs->start('tag');
@@ -340,187 +331,85 @@ final class PhotoButlerTest extends TestCase
         $run = $jobs->step('previews', $run['token']);
         $this->assertSame('error', $run['status']);
         $this->assertSame(1, $run['errors']);
-        file_put_contents($path, $original);
+        $this->client->invalidThumbnails = [];
         $run = $jobs->start('previews');
         $run = $jobs->step('previews', $run['token']);
         $this->assertSame('done', $run['status']);
         $this->assertSame(0, $run['errors']);
         $this->assertSame(1, $run['completed']);
-        $this->assertSame($original, file_get_contents($path));
+        $this->assertSame(['meer', 'meer'], $this->client->downloads);
         foreach (['scan', 'tag', 'faces'] as $job) {
             $this->assertSame($before[$job], $jobs->all()[$job]);
         }
     }
 
-    public function testImportProgressCountsExistingIndexInsteadOfCurrentPass(): void
+    public function testJobsRemainReadableWhenTheCloudSourceIsUnavailable(): void
     {
-        $this->library->index();
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Zweiter.jpg');
-        file_put_contents($this->root . '/photos/Urlaub/notes.txt', 'unsupported');
-        $before = $this->library->jobs->all()['scan'];
-        $this->assertSame(1, $before['completed']);
-        $this->assertSame(1, $before['estimated']);
-        $run = $this->library->jobs->start('scan');
-        $this->assertSame(1, $run['completed']);
-        $this->assertSame(2, $run['total']);
-        $this->assertSame(50, $run['percent']);
-        $this->assertSame(0, $run['estimated']);
-        $run = $this->library->jobs->step('scan', $run['token'], scanLimit: 1);
-        $this->assertSame(1, $run['completed']);
-        $this->library->jobs->pause('scan');
-        $checkpoint = $this->library->database->query('SELECT state FROM scan_state')->fetchColumn();
-        $reopened = new PhotoButler($this->root);
-        $this->assertSame(50, $reopened->jobs->all()['scan']['percent']);
-        $this->assertSame($checkpoint, $reopened->database->query('SELECT state FROM scan_state')->fetchColumn());
-        $run = $reopened->jobs->start('scan');
-        $this->assertSame($checkpoint, $reopened->database->query('SELECT state FROM scan_state')->fetchColumn());
-        $run = $reopened->jobs->step('scan', $run['token']);
-        $this->assertSame(100, $run['percent']);
-        $this->assertSame(2, $run['completed']);
-        $this->assertSame(100, new PhotoButler($this->root)->jobs->all()['scan']['percent']);
-        $this->assertSame(100, $reopened->jobs->start('scan')['percent']);
-        $this->assertSame(0, (int) $reopened->database->query('SELECT SUM(attempted) FROM photos')->fetchColumn());
-        $this->assertSame(0, (int) $reopened->database->query('SELECT COUNT(*) FROM face_state')->fetchColumn());
-    }
-
-    public function testImportInventoryRefreshHandlesAddedRemovedAndOverlappingSources(): void
-    {
-        $this->library->index();
-        $run = $this->library->jobs->start('scan');
-        $run = $this->library->jobs->step('scan', $run['token']);
-        $this->assertSame(100, $run['percent']);
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Zweiter.JPG');
-        $this->assertSame(1, new PhotoButler($this->root)->jobs->all()['scan']['total']);
-        $run = $this->library->jobs->start('scan');
-        $this->assertSame(2, $run['total']);
-        $this->assertSame(50, $run['percent']);
-        $this->assertCount(1, $this->library->photos());
-        $this->library->jobs->pause('scan');
-        unlink($this->root . '/photos/Urlaub/Meer.jpg');
-        $run = $this->library->jobs->start('scan');
-        $this->assertSame(1, $run['total']);
-        $this->assertSame(0, $run['completed']);
-        $this->library->jobs->step('scan', $run['token']);
-        $this->assertSame(100, new PhotoButler($this->root)->jobs->all()['scan']['percent']);
-
-        $configuration = file_get_contents($this->root . '/.data/.env');
-        file_put_contents(
-            $this->root . '/.data/.env',
-            preg_replace(
-                '/^PHOTO_PATHS=.*$/m',
-                "PHOTO_PATHS='" . json_encode([$this->root . '/photos', $this->root . '/photos/Urlaub']) . "'",
-                $configuration
-            )
-        );
-        $overlapping = new PhotoButler($this->root);
-        $run = $overlapping->jobs->start('scan');
-        $this->assertSame(1, $run['total']);
-        $this->assertSame(1, $run['completed']);
-        $this->assertSame(100, $overlapping->jobs->step('scan', $run['token'])['percent']);
-    }
-
-    public function testImportInventoryBootstrapRejectsStaleOutOfScopeAndLinkedIndexPaths(): void
-    {
-        mkdir($this->root . '/photos-old');
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos-old/Alt.jpg');
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Entfernt.jpg');
-        $configuration = file_get_contents($this->root . '/.data/.env');
-        file_put_contents(
-            $this->root . '/.data/.env',
-            preg_replace(
-                '/^PHOTO_PATHS=.*$/m',
-                "PHOTO_PATHS='" . json_encode([$this->root . '/photos', $this->root . '/photos-old']) . "'",
-                $configuration
-            )
-        );
-        new PhotoButler($this->root)->index();
-        unlink($this->root . '/photos/Urlaub/Entfernt.jpg');
-        file_put_contents($this->root . '/.data/.env', $configuration);
-        symlink($this->root . '/photos-old', $this->root . '/photos/linked');
-        symlink($this->root . '/photos-old/Alt.jpg', $this->root . '/photos/linked.jpg');
-        file_put_contents($this->root . '/photos/notes.TXT', 'unsupported');
-        $reopened = new PhotoButler($this->root);
-        $progress = $reopened->jobs->all()['scan'];
-        $this->assertSame(1, $progress['completed']);
-        $this->assertSame(1, $progress['total']);
-        $this->assertSame(1, $progress['estimated']);
-        $this->assertSame(3, (int) $reopened->database->query('SELECT COUNT(*) FROM photos')->fetchColumn());
-        $run = $reopened->jobs->start('scan');
-        $this->assertSame(1, $run['total']);
-        $this->assertSame(100, $run['percent']);
-        $reopened->jobs->pause('scan');
-        $before = $reopened->jobs->all()['scan'];
-        rename($this->root . '/photos', $this->root . '/temporarily-unavailable');
-        try {
-            $this->assertSame($before, new PhotoButler($this->root)->jobs->all()['scan']);
-            try {
-                $reopened->jobs->start('scan');
-                $this->fail('An unavailable source must not replace a valid inventory with zero.');
-            } catch (RuntimeException) {
-                $after = $reopened->jobs->all()['scan'];
-                $this->assertSame(
-                    [
-                        ...array_column($before['log'], 'message'),
-                        'Aktualisiere den Gesamtbestand aus den Quellordnern …',
-                        'Start fehlgeschlagen. Quellen und Konfiguration prüfen.'
-                    ],
-                    array_column($after['log'], 'message')
-                );
-                unset($before['log'], $after['log']);
-                $this->assertSame($before, $after);
-            }
-        } finally {
-            rename($this->root . '/temporarily-unavailable', $this->root . '/photos');
-        }
-    }
-
-    public function testJobsRemainReadableWithoutInventoryWhenSourceIsUnavailable(): void
-    {
-        $this->library->index();
-        $this->library->database->exec(
-            "UPDATE jobs SET status = 'paused', completed = 1, total = 2 WHERE job = 'scan'"
-        );
+        $this->indexMeer();
+        $this->library->database->exec("UPDATE jobs SET status = 'paused' WHERE job = 'scan'");
         $before = $this->library->database->query('SELECT * FROM jobs')->fetchAll();
-        rename($this->root . '/photos', $this->root . '/temporarily-unavailable');
+        $source = $this->root . '/.data/onedrive-source.json';
+        rename($source, $source . '.offline');
         $states = $this->library->jobs->all();
         $this->assertCount(4, $states);
         $this->assertSame('paused', $states['scan']['status']);
         $this->assertSame(1, $states['scan']['completed']);
-        $this->assertSame(2, $states['scan']['total']);
-        $this->assertSame(1, $states['scan']['estimated']);
-        $this->assertSame(
-            'Fotoquelle nicht verfügbar. Gespeicherter Bestand bleibt erhalten.',
-            $states['scan']['warning']
-        );
+        $this->assertSame(1, $states['scan']['total']);
         $this->assertSame($before, $this->library->database->query('SELECT * FROM jobs')->fetchAll());
-        $this->assertSame(
-            0,
-            (int) $this->library->database->query('SELECT COUNT(*) FROM import_inventory')->fetchColumn()
-        );
-        try {
-            $this->library->jobs->start('scan');
-            $this->fail('Starting an import must still reject an unavailable source.');
-        } catch (RuntimeException $exception) {
-            $this->assertSame($states['scan']['warning'], $exception->getMessage());
+        foreach (['scan', 'previews'] as $job) {
+            $run = $this->library->jobs->start($job);
+            try {
+                $this->library->jobs->step($job, $run['token']);
+                $this->fail('Jobs must still reject an unavailable source.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame('OneDrive einrichten: --onedrive-login ausführen.', $exception->getMessage());
+            }
+            $this->assertSame('paused', $this->library->jobs->all()[$job]['status']);
         }
-        $this->assertSame($before, $this->library->database->query('SELECT * FROM jobs')->fetchAll());
-        rename($this->root . '/temporarily-unavailable', $this->root . '/photos');
-        $this->assertSame('', $this->library->jobs->all()['scan']['warning']);
+        $this->assertCount(1, $this->library->photos());
+        rename($source . '.offline', $source);
+
+        file_put_contents(
+            $this->root . '/.data/.env',
+            preg_replace('/^ONEDRIVE_.*\R/m', '', file_get_contents($this->root . '/.data/.env'))
+        );
+        $unconfigured = new PhotoButler($this->root);
+        $this->assertNull($unconfigured->oneDrive);
+        $message = 'OneDrive nicht konfiguriert. ONEDRIVE_CLIENT_ID in .data/.env setzen.';
+        $states = $unconfigured->jobs->all();
+        $this->assertSame($message, $states['scan']['warning']);
+        $this->assertSame(1, $states['scan']['estimated']);
+        $this->assertCount(1, $unconfigured->photos());
+        $this->assertNull($unconfigured->imagePath(1));
+        foreach (['scan', 'previews'] as $job) {
+            $run = $unconfigured->jobs->start($job);
+            try {
+                $unconfigured->jobs->step($job, $run['token']);
+                $this->fail('Jobs must name the missing OneDrive configuration.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame($message, $exception->getMessage());
+            }
+        }
     }
 
     public function testScanCheckpointPercentAndStaleRunsCannotRestartWork(): void
     {
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Zweiter.jpg');
+        $this->queue([$this->item('a', 'Meer.jpg')], complete: false);
+        $this->client->pages[] = [
+            'value' => [$this->item('b', 'Zweiter.jpg')],
+            '@odata.deltaLink' => OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture'
+        ];
         $jobs = $this->library->jobs;
         $scan = $jobs->start('scan');
         $oldToken = $scan['token'];
-        $scan = $jobs->step('scan', $oldToken, scanLimit: 1);
-        $this->assertSame(1, $scan['completed']);
+        $scan = $jobs->step('scan', $oldToken);
+        $this->assertSame('running', $scan['status']);
+        $this->assertSame(0, $scan['completed']);
         $this->assertLessThan(100, $scan['percent']);
-        $this->assertSame(0, $scan['estimated']);
+        $this->assertSame(1, $scan['estimated']);
         $jobs->pause('scan');
         $this->assertSame($scan['completed'], $jobs->step('scan', $oldToken)['completed']);
-        $reopened = new PhotoButler($this->root);
+        $reopened = new PhotoButler($this->root, oneDriveClient: $this->client);
         $this->assertSame('paused', $reopened->jobs->all()['scan']['status']);
         $newRun = $reopened->jobs->start('scan');
         $this->assertNotSame($oldToken, $newRun['token']);
@@ -541,14 +430,13 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame('done', $jobs->pause('scan')['status']);
     }
 
-    public function testPreviewJobRefreshesAnEmptyCheckpointAndReusesBothCaches(): void
+    public function testPreviewJobRefreshesAnEmptyCheckpointAndReusesTheCache(): void
     {
         $jobs = $this->library->jobs;
         $jobs->start('previews');
         $jobs->pause('previews');
-        $this->library->index();
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Zweiter.jpg');
-        $this->library->index();
+        $this->indexMeer();
+        $this->index([$this->item('zweiter', 'Zweiter.jpg', 'urlaub')]);
         $run = $jobs->start('previews');
         $this->assertSame(2, $run['total']);
         $run = $jobs->step('previews', $run['token'], previewLimit: 1);
@@ -564,26 +452,31 @@ final class PhotoButlerTest extends TestCase
         $jobs->step('previews', $run['token'], previewLimit: 1);
         clearstatcache();
         $this->assertSame(1234567890, filemtime($thumbnail));
+        $this->assertSame(['meer', 'zweiter'], $this->client->downloads);
         $this->assertSame('pending', $this->library->photo(1)->status);
         $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM face_state')->fetchColumn());
     }
 
     public function testJobEstimatesPersistWithoutCountingPausesOrStartingWork(): void
     {
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Second.jpg');
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Third.jpg');
-        $this->library->index();
+        $this->index([
+            $this->folder('urlaub', 'Urlaub'),
+            $this->item('a', 'Meer.jpg', 'urlaub'),
+            $this->item('b', 'Second.jpg', 'urlaub'),
+            $this->item('c', 'Third.jpg', 'urlaub')
+        ]);
         foreach ($this->library->jobs->all() as $state) {
             $this->assertNull($state['eta_seconds']);
             $this->assertSame('Noch nicht abschätzbar', $state['eta']);
         }
+        $this->queue([$this->item('a', 'Meer.jpg', 'urlaub')], complete: false);
         $run = $this->library->jobs->start('scan');
-        $run = $this->library->jobs->step('scan', $run['token'], scanLimit: 1);
+        $run = $this->library->jobs->step('scan', $run['token']);
         $this->assertSame(3, $run['completed']);
         $this->assertSame(2, $run['remaining_files']);
         $this->assertGreaterThan(0, $run['eta_seconds']);
         $this->library->jobs->pause('scan');
-        $reopened = new PhotoButler($this->root);
+        $reopened = new PhotoButler($this->root, oneDriveClient: $this->client);
         $this->assertSame($run['eta_seconds'], $reopened->jobs->all()['scan']['eta_seconds']);
         $run = $reopened->jobs->start('previews');
         $run = $reopened->jobs->step('previews', $run['token'], previewLimit: 1);
@@ -599,8 +492,12 @@ final class PhotoButlerTest extends TestCase
 
     public function testAllJobEstimatesFormatKnownDurationsAndKeepUnknownsHonest(): void
     {
+        $this->index([$this->item('a')]);
+        $this->client->pages[] = [
+            'value' => [$this->item('a')],
+            '@odata.deltaLink' => OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture'
+        ];
         $this->library->index();
-        $this->library->importProgress(refresh: true);
         foreach (['scan', 'previews', 'tag', 'faces'] as $job) {
             $this->library->database
                 ->prepare('INSERT INTO job_timings (job, seconds_per_file) VALUES (?, ?)')
@@ -620,54 +517,48 @@ final class PhotoButlerTest extends TestCase
         $state = $this->library->jobs->all()['previews'];
         $this->assertNull($state['eta_seconds']);
         $this->assertSame('Fehler prüfen', $state['eta']);
-        $this->library->database->exec('DELETE FROM import_inventory');
+        $this->library->database->exec('DELETE FROM onedrive_state');
         $this->assertSame('Noch nicht abschätzbar', $this->library->jobs->all()['scan']['eta']);
     }
 
     public function testPreviewBatchesAreBoundedAndRetainManualSnapshotCheckpoints(): void
     {
-        for ($i = 0; $i < 29; $i++) {
-            $this->copyDistinctPhoto(
-                $this->root . '/photos/Urlaub/Meer.jpg',
-                $this->root . '/photos/Urlaub/' . $i . '.jpg'
-            );
+        $items = [];
+        for ($i = 0; $i < 105; $i++) {
+            $items[] = $this->item('p' . $i, $i . '.jpg');
         }
-        $this->library->index();
-        foreach ($this->library->photos() as $photo) {
-            $this->library->imagePath($photo->id);
-        }
+        $this->index($items);
         $run = $this->library->jobs->start('previews');
         $run = $this->library->jobs->step('previews', $run['token'], previewLimit: 1000);
-        $this->assertSame(25, $run['completed']);
-        $this->assertSame(30, $run['total']);
+        $this->assertSame(100, $run['completed']);
+        $this->assertSame(105, $run['total']);
         $this->assertSame('running', $run['status']);
         $this->library->jobs->pause('previews');
-        $reopened = new PhotoButler($this->root);
-        $this->assertSame(25, $reopened->jobs->all()['previews']['completed']);
+        $reopened = new PhotoButler($this->root, oneDriveClient: $this->client);
+        $this->assertSame(100, $reopened->jobs->all()['previews']['completed']);
         $this->assertSame('paused', $reopened->jobs->step('previews', $run['token'])['status']);
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Later.jpg');
+        $this->client->pages[] = [
+            'value' => [$this->item('later', 'Later.jpg')],
+            '@odata.deltaLink' => OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture'
+        ];
         $reopened->index();
         $run = $reopened->jobs->start('previews');
-        $this->assertSame(25, $run['cursor']);
-        $this->assertSame(30, $run['maximum']);
+        $this->assertSame(100, $run['cursor']);
+        $this->assertSame(105, $run['maximum']);
         $run = $reopened->jobs->step('previews', $run['token']);
-        $this->assertSame(30, $run['completed']);
+        $this->assertSame(105, $run['completed']);
         $this->assertSame(100, $run['percent']);
         $this->assertSame('done', $run['status']);
+        $this->assertCount(105, $this->client->downloads);
+        $this->assertNotContains('later', $this->client->downloads);
         $this->assertSame(0, (int) $reopened->database->query('SELECT SUM(attempted) FROM photos')->fetchColumn());
         $this->assertSame(0, (int) $reopened->database->query('SELECT COUNT(*) FROM face_state')->fetchColumn());
     }
 
     public function testPreviewCheckpointAllowsConcurrentWritesBeforeSavingTiming(): void
     {
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Second.jpg');
-        $this->library->index();
-        foreach ($this->library->photos() as $photo) {
-            $this->library->imagePath($photo->id);
-        }
+        $this->index([$this->item('a', 'Meer.jpg'), $this->item('b', 'Second.jpg')]);
         $database = $this->library->database;
-        unlink($this->root . '/photos/Urlaub/Meer.jpg');
-        unlink($this->root . '/photos/Urlaub/Second.jpg');
         $writer = new PDO('sqlite:' . $this->root . '/.data/database.sqlite');
         $database->setAttribute(PDO::ATTR_STATEMENT_CLASS, [ConcurrentJobCheckpointStatement::class, [$writer]]);
         try {
@@ -698,60 +589,6 @@ final class PhotoButlerTest extends TestCase
         } finally {
             $database->setAttribute(PDO::ATTR_STATEMENT_CLASS, [PDOStatement::class]);
         }
-    }
-
-    public function testPreviewBatchYieldsAfterAnExpensivePair(): void
-    {
-        foreach (['Second', 'Third'] as $name) {
-            $this->copyDistinctPhoto(
-                $this->root . '/photos/Urlaub/Meer.jpg',
-                $this->root . '/photos/Urlaub/' . $name . '.jpg'
-            );
-        }
-        $this->library->index();
-        $process = proc_open(
-            [
-                'php',
-                '-r',
-                '$lock=fopen($argv[1],"c"); flock($lock,LOCK_EX); echo "ready\n"; usleep(1000000);',
-                $this->root . '/.data/thumbnail-1.lock'
-            ],
-            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']],
-            $pipes
-        );
-        try {
-            $this->assertSame("ready\n", fgets($pipes[1]));
-            $run = $this->library->jobs->start('previews');
-            $run = $this->library->jobs->step('previews', $run['token']);
-        } finally {
-            fclose($pipes[1]);
-            $this->assertSame(0, proc_close($process));
-        }
-        $this->assertSame(2, $run['completed']);
-        $this->assertSame('running', $run['status']);
-        $this->assertNull($this->library->imagePath(3, cachedOnly: true));
-        $this->library->jobs->pause('previews');
-        $this->assertSame(2, $this->library->jobs->step('previews', $run['token'])['completed']);
-    }
-
-    public function testPreviewBatchHonorsPauseBetweenPairs(): void
-    {
-        foreach (['Second', 'Third'] as $name) {
-            $this->copyDistinctPhoto(
-                $this->root . '/photos/Urlaub/Meer.jpg',
-                $this->root . '/photos/Urlaub/' . $name . '.jpg'
-            );
-        }
-        $this->library->index();
-        $this->library->database->exec(
-            "CREATE TRIGGER pause_preview AFTER UPDATE OF width ON photos BEGIN UPDATE jobs SET status = 'paused' WHERE job = 'previews'; END"
-        );
-        $run = $this->library->jobs->start('previews');
-        $run = $this->library->jobs->step('previews', $run['token']);
-        $this->assertSame(2, $run['completed']);
-        $this->assertSame('paused', $run['status']);
-        $this->assertSame(66, $run['percent']);
-        $this->assertNull($this->library->imagePath(3, cachedOnly: true));
     }
 
     public function testJobLocksAreIndependentAndResetProtectsBothAnalysisQueues(): void
@@ -785,7 +622,8 @@ final class PhotoButlerTest extends TestCase
 
     public function testCliRequiresOneExplicitJobAndPersistsBoundedProgress(): void
     {
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Zweiter.jpg');
+        $this->index([$this->item('a', 'Meer.jpg'), $this->item('b', 'Zweiter.jpg')]);
+        $this->library->oneDrive->previews([1, 2]);
         $run = function (array $arguments): array {
             $process = proc_open(
                 [PHP_BINARY, dirname(__DIR__) . '/bin/photobutler-index', '--root=' . $this->root, ...$arguments],
@@ -793,10 +631,10 @@ final class PhotoButlerTest extends TestCase
                 $pipes
             );
             $output = stream_get_contents($pipes[1]);
-            stream_get_contents($pipes[2]);
+            $errors = stream_get_contents($pipes[2]);
             fclose($pipes[1]);
             fclose($pipes[2]);
-            return [proc_close($process), $output];
+            return [proc_close($process), $output, $errors];
         };
         $this->assertSame(1, $run([])[0]);
         $this->assertSame(1, $run(['--scan-only', '--tag-only'])[0]);
@@ -814,15 +652,11 @@ final class PhotoButlerTest extends TestCase
                 fclose($lock);
             }
         }
-        $this->assertCount(0, $this->library->photos());
-        $this->assertSame(0, $run(['--scan-only', '--scan-limit=1'])[0]);
+        [$code, , $errors] = $run(['--scan-only']);
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('OneDrive erneut anmelden', $errors);
         $this->assertSame('paused', $this->library->jobs->all()['scan']['status']);
-        $this->assertSame(1, $this->library->jobs->all()['scan']['completed']);
-        [$code, $output] = $run(['--scan-only']);
-        $this->assertSame(0, $code);
-        $this->assertStringContainsString('100 %', $output);
-        $this->assertSame('idle', $this->library->jobs->all()['tag']['status']);
-        $this->assertSame('idle', $this->library->jobs->all()['faces']['status']);
+        $this->assertSame(2, $this->library->photoCount());
         [$code, $output] = $run(['--previews-only', '--limit=1']);
         $this->assertSame(0, $code);
         $this->assertStringContainsString('50 %', $output);
@@ -834,73 +668,108 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(1, $run(['--faces-only', '--limit=1'])[0]);
         $this->assertSame(1, (int) $this->library->database->query('SELECT COUNT(*) FROM face_state')->fetchColumn());
         $this->assertSame(1, $this->library->jobs->all()['tag']['errors']);
+        $this->assertSame(['a', 'b'], $this->client->downloads);
     }
 
-    public function testCliRescanReportsCheckedFilesSeparatelyFromTheCompleteCatalog(): void
+    public function testScanProgressLineReportsCheckedEntriesSeparatelyFromTheCatalog(): void
     {
-        foreach (['Second', 'Third'] as $name) {
-            $this->copyDistinctPhoto(
-                $this->root . '/photos/Urlaub/Meer.jpg',
-                $this->root . '/photos/Urlaub/' . $name . '.jpg'
-            );
-        }
-        file_put_contents($this->root . '/photos/Urlaub/zz.txt', 'not an imported photo');
-        $this->library->index();
-        $run = function (array $arguments): string {
-            $process = proc_open(
-                [
-                    PHP_BINARY,
-                    dirname(__DIR__) . '/bin/photobutler-index',
-                    '--root=' . $this->root,
-                    '--scan-only',
-                    ...$arguments
-                ],
-                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-                $pipes
-            );
-            $output = stream_get_contents($pipes[1]);
-            $errors = stream_get_contents($pipes[2]);
-            fclose($pipes[1]);
-            fclose($pipes[2]);
-            $this->assertSame(0, proc_close($process), $errors);
-            return $output;
+        $this->index([
+            $this->folder('urlaub', 'Urlaub'),
+            $this->item('a', 'Meer.jpg', 'urlaub'),
+            $this->item('b', 'Second.jpg', 'urlaub'),
+            $this->item('c', 'Third.jpg', 'urlaub')
+        ]);
+        $this->queue([$this->item('a', 'Meer.jpg', 'urlaub')], complete: false);
+        $this->client->pages[] = [
+            'value' => [$this->item('b', 'Second.jpg', 'urlaub')],
+            '@odata.nextLink' => OneDriveClient::GRAPH . '/next'
+        ];
+        $this->client->pages[] = [
+            'value' => [$this->item('c', 'Third.jpg', 'urlaub')],
+            '@odata.deltaLink' => OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture'
+        ];
+        $line = function (array $state): string {
+            ob_start();
+            $this->library->jobs->printProgress('scan', $state);
+            return ob_get_clean();
         };
-        foreach ([1 => 33, 2 => 66, 3 => 99] as $checked => $percent) {
-            $output = $run(['--scan-limit=1']);
+        $run = $this->library->jobs->start('scan');
+        foreach ([[2, 50], [3, 75]] as [$checked, $percent]) {
+            $output = $line($this->library->jobs->step('scan', $run['token']));
             $this->assertStringContainsString(
-                'Galerie einlesen · Abgleich läuft · ' .
+                'Galerie einlesen · Abgleich läuft · ca. ' .
                     $percent .
                     ' % · ' .
                     $checked .
-                    '/3 Quelldateien geprüft · Katalog: 3/3',
+                    '/ca. 4 Metadateneinträge geprüft · Katalog: 3 Fotos',
                 $output
             );
             $this->assertStringContainsString('Restzeit:', $output);
-            $this->assertStringContainsString('Pausiert.', $output);
-            $this->assertStringNotContainsString('100 %', $output);
-            $state = $this->library->jobs->all()['scan'];
-            $this->assertSame(100, $state['percent']);
-            $this->assertSame($checked, $state['checked']);
-            $this->assertSame('paused', $state['status']);
         }
-        $output = $run([]);
+        $output = $line($this->library->jobs->step('scan', $run['token']));
         $this->assertStringContainsString(
-            'Galerie einlesen · Abgeschlossen · 100 % · 3/3 Quelldateien geprüft · Katalog: 3/3',
+            'Galerie einlesen · Abgeschlossen · 100 % · 4/4 Metadateneinträge geprüft · Katalog: 3 Fotos',
             $output
         );
         $this->assertStringNotContainsString('Restzeit:', $output);
         $this->assertSame('done', $this->library->jobs->all()['scan']['status']);
-        foreach (glob($this->root . '/photos/Urlaub/*') as $photo) {
-            unlink($photo);
-        }
-        $output = $run([]);
-        $this->assertStringContainsString('Abgeschlossen · 100 % · 0/0 Quelldateien geprüft · Katalog: 0/0', $output);
+        $this->queue([['id' => 'a', 'deleted' => []], ['id' => 'b', 'deleted' => []], ['id' => 'c', 'deleted' => []]]);
+        $run = $this->library->jobs->start('scan');
+        $output = $line($this->library->jobs->step('scan', $run['token']));
+        $this->assertStringContainsString(
+            'Abgeschlossen · 100 % · 4/4 Metadateneinträge geprüft · Katalog: 0 Fotos',
+            $output
+        );
         $this->assertStringNotContainsString('Restzeit:', $output);
+    }
+
+    public function testCronResumesConfiguredJobsWithinOneRequestAndLeavesCliRunsAlone(): void
+    {
+        $this->queue([$this->folder('urlaub', 'Urlaub'), $this->item('meer', 'Meer.jpg', 'urlaub')]);
+        $report = $this->library->jobs->cron();
+        $this->assertStringContainsString("Galerie einlesen: done · 100 % · 0 Fehler\n", $report);
+        $this->assertStringContainsString("Thumbnails downloaden: done · 100 % · 0 Fehler\n", $report);
+        $this->assertStringContainsString("KI-Tagging: übersprungen (KI nicht konfiguriert)\n", $report);
+        $this->assertStringContainsString(
+            "Gesichtertagging: übersprungen (Gesichtserkennung nicht installiert)\n",
+            $report
+        );
+        $this->assertSame(['meer'], $this->client->downloads);
+        $this->assertNotNull($this->library->imagePath(1, cachedOnly: true));
+        $states = $this->library->jobs->all();
+        $this->assertSame('idle', $states['tag']['status']);
+        $this->assertSame('idle', $states['faces']['status']);
+        $this->assertSame('pending', $this->library->photo(1)->status);
+
+        $this->queue([$this->item('zweiter', 'Zweiter.jpg', 'urlaub')]);
+        $lock = fopen($this->root . '/.data/cli-scan.lock', 'c');
+        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        try {
+            $report = $this->library->jobs->cron();
+            $this->assertStringContainsString("Galerie einlesen: läuft bereits\n", $report);
+            $this->assertStringContainsString("Thumbnails downloaden: done · 100 % · 0 Fehler\n", $report);
+            $this->assertSame(1, $this->library->photoCount());
+        } finally {
+            fclose($lock);
+        }
+        $report = $this->library->jobs->cron();
+        $this->assertStringContainsString("Galerie einlesen: done · 100 % · 0 Fehler\n", $report);
+        $this->assertSame(2, $this->library->photoCount());
+        $this->assertSame(['meer', 'zweiter'], $this->client->downloads);
+
+        $report = $this->library->jobs->cron();
+        $this->assertStringContainsString("Galerie einlesen: Unexpected fixture request\n", $report);
+        $this->assertStringContainsString("Thumbnails downloaden: done · 100 % · 0 Fehler\n", $report);
+        foreach ($this->library->jobs->all() as $state) {
+            $this->assertNotSame('running', $state['status']);
+        }
+        $this->assertSame('paused', $this->library->jobs->all()['scan']['status']);
+        $this->assertSame(2, $this->library->photoCount());
     }
 
     public function testFilteredPhotoCountsIncludeEveryPageAndUseTheListingFilters(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $insert = $this->library->database->prepare("INSERT INTO photos
             (root, path, album, name, modified, bytes, width, height, taken, seen, priority, manual_tags)
             SELECT root, path || ?, ?, ?, modified, bytes, width, height, taken, seen, ?, ? FROM photos WHERE id = 1");
@@ -947,90 +816,26 @@ final class PhotoButlerTest extends TestCase
 
     public function testTaggingNeverProcessesFaces(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $this->library->database->exec("UPDATE photos SET status = 'done'");
         $this->assertSame(0, $this->library->tag(1));
         $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM face_state')->fetchColumn());
     }
 
-    public function testIndexIsIdempotentAndKeepsOriginals(): void
+    public function testIndexIsIdempotentAndNeverDownloadsDuringImport(): void
     {
-        $path = $this->root . '/photos/Urlaub/Meer.jpg';
-        $hash = hash_file('sha256', $path);
-        $this->library->index();
-        $this->library->index();
+        $this->indexMeer();
+        $this->index([]);
         $photos = $this->library->photos();
         $this->assertCount(1, $photos);
         $this->assertSame('Urlaub', $photos[0]->album);
-        $this->assertSame($hash, hash_file('sha256', $path));
-        $this->assertFileExists($this->library->imagePath($photos[0]->id));
-    }
-
-    public function testStickerArchiveRendersPreviewAndAnimationWithoutChangingOriginal(): void
-    {
-        $source = $this->root . '/photos/Urlaub/sticker.webp';
-        $archive = new ZipArchive();
-        $archive->open($source, ZipArchive::CREATE);
-        $archive->addFromString('animation/animation.json', file_get_contents(__DIR__ . '/fixtures/sticker.json'));
-        $archive->close();
-        $hash = hash_file('sha256', $source);
-        $this->library->index();
-        $id = $this->library->photos(query: 'sticker')[0]->id;
-        $preview = $this->library->imagePath($id);
-        $this->assertNotNull($preview);
-        $this->assertSame('image/jpeg', getimagesize($preview)['mime']);
-        $this->assertSame(64, $this->library->photo($id)->width);
-        $animation = $this->library->imagePath($id, animated: true);
-        $this->assertSame('image/webp', getimagesize($animation)['mime']);
-        $this->assertStringContainsString('ANIM', file_get_contents($animation));
-        $this->assertSame($source, $this->library->imagePath($id, original: true));
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.detail*'));
-        $this->assertSame($hash, hash_file('sha256', $source));
-        $this->assertSame($animation, $this->library->imagePath($id, animated: true));
-        unlink($preview);
-        $this->assertFileExists($this->library->imagePath($id));
-        imagejpeg(imagecreatetruecolor(64, 64), $source);
-        clearstatcache();
-        $this->library->index();
-        $this->assertFileExists($animation);
-        $this->assertSame($animation, $this->library->imagePath($id, animated: true));
-    }
-
-    public function testAnimatedWebpGetsAnAiPreviewAndKeepsPlaying(): void
-    {
-        $source = $this->root . '/photos/Urlaub/animated.webp';
-        copy(__DIR__ . '/fixtures/animated-sticker.webp', $source);
-        $hash = hash_file('sha256', $source);
-        $this->library->index();
-        $id = $this->library->photos(query: 'animated')[0]->id;
-        $preview = $this->library->imagePath($id);
-        $this->assertNotNull($preview);
-        $this->assertSame('image/jpeg', getimagesize($preview)['mime']);
-        $this->assertSame(32, $this->library->photo($id)->width);
-        $this->assertStringContainsString('ANIM', file_get_contents($this->library->imagePath($id, animated: true)));
-        $this->assertSame($source, $this->library->imagePath($id, original: true));
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.detail*'));
-        $this->assertSame($hash, hash_file('sha256', $source));
-    }
-
-    public function testOtherZipEntriesAreNeverExtracted(): void
-    {
-        $source = $this->root . '/photos/Urlaub/sticker.webp';
-        $archive = new ZipArchive();
-        $archive->open($source, ZipArchive::CREATE);
-        $archive->addFromString('../escaped.json', '{}');
-        $archive->addFromString('animation/animation.json', str_repeat(' ', 4194305));
-        $archive->close();
-        $this->library->index();
-        $id = $this->library->photos(query: 'sticker')[0]->id;
-        $this->assertNull($this->library->imagePath($id));
-        $this->assertFileDoesNotExist($this->root . '/escaped.json');
+        $this->assertSame([], $this->client->downloads);
         $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
     }
 
     public function testSearchTagsAndFavorites(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $id = $this->library->photos()[0]->id;
         $this->library->saveTags($id, ' Küste, Meer, Meer ');
         $this->library->favorite($id, true);
@@ -1042,7 +847,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testGalleryOnlyLinksToJobsAndOffersInfiniteLoading(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $photos = array_fill(0, 60, $this->library->photos()[0]);
         $matchedPhotos = 61;
         $stats = [
@@ -1159,7 +964,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testPhotoBatchesRetainFiltersAndDoNotOverlap(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         for ($number = 0; $number < 64; $number++) {
             $statement = $this->library->database->prepare("INSERT INTO photos
                 (root, path, album, name, modified, bytes, width, height, taken, seen, ai_tags, priority)
@@ -1209,7 +1014,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testFavoritesFilterSupportsAllOnlyAndExcludedFavorites(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $this->library->database->exec("UPDATE photos SET priority = 1, taken = '2024-01-01'");
         $this->assertCount(1, $this->library->photos());
         $this->assertCount(1, $this->library->photos(favorites: '0'));
@@ -1298,7 +1103,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testDateSortingAppliesToAllFilteredPhotosBeforePagination(): void
     {
-        $this->library->index();
+        $this->indexMeer();
         $dates = [
             '2024-01-20 10:00:00',
             '2025-12-05 12:00:00',
@@ -1353,43 +1158,25 @@ final class PhotoButlerTest extends TestCase
         $this->assertStringContainsString('$download.href = `?photo=${photo.id}&size=original&download=1`;', $script);
     }
 
-    public function testOriginalImageAccessKeepsFullResolutionWithoutGeneratingPreview(): void
+    public function testSymlinkedCachesAndDeletedItemsAreNotServed(): void
     {
-        $path = $this->root . '/photos/Urlaub/Meer.jpg';
-        imagejpeg(imagecreatetruecolor(3200, 2400), $path, 100);
-        $hash = hash_file('sha256', $path);
-        $this->library->index();
-        $original = $this->library->imagePath($this->library->photos()[0]->id, original: true);
-        $this->assertSame($path, $original);
-        $this->assertSame([3200, 2400], array_slice(getimagesize($original), 0, 2));
-        $this->assertSame($hash, hash_file('sha256', $original));
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.jpg'));
-        $thumbnail = $this->library->imagePath($this->library->photos()[0]->id);
-        $this->assertSame([640, 480], array_slice(getimagesize($thumbnail), 0, 2));
-        $this->assertSame($hash, hash_file('sha256', $original));
-    }
-
-    public function testMissingAndEscapingFilesAreNotServed(): void
-    {
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
-        rename($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/outside.jpg');
-        symlink($this->root . '/outside.jpg', $this->root . '/photos/Urlaub/Meer.jpg');
-        $this->assertNull($this->library->imagePath($id, original: true));
+        $id = $this->indexMeer();
+        file_put_contents($this->root . '/outside.jpg', $this->client->jpeg);
+        symlink($this->root . '/outside.jpg', $this->thumbnailPath($id));
         $this->assertNull($this->library->imagePath($id));
-        $this->library->index();
+        $this->assertNull($this->library->imagePath($id, cachedOnly: true));
+        $this->index([['id' => 'meer', 'deleted' => []]]);
         $this->assertCount(0, $this->library->photos());
+        $this->assertNull($this->library->imagePath($id));
     }
 
-    public function testKnownPathKeepsAnalysisAndManualTagsWhenSourceMetadataChanges(): void
+    public function testKnownItemKeepsAnalysisAndManualTagsWhenOnlyMetadataChanges(): void
     {
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
+        $id = $this->indexMeer();
         $this->library->saveTags($id, 'Familie');
         $this->library->favorite($id, true);
         $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Meer\"]'");
-        touch($this->root . '/photos/Urlaub/Meer.jpg', time() + 10);
-        $this->assertSame(0, $this->library->index());
+        $this->index([$this->item('meer', 'Meer.jpg', 'urlaub', modified: '2026-09-02T12:00:00Z')]);
         $this->assertSame(['Familie'], $this->library->photo($id)->tags);
         $this->assertTrue($this->library->photo($id)->favorite);
         $this->assertSame('done', $this->library->photo($id)->status);
@@ -1409,10 +1196,10 @@ final class PhotoButlerTest extends TestCase
         );
     }
 
-    public function testUnavailableRootPreservesIndex(): void
+    public function testUnavailableSourcePreservesIndex(): void
     {
-        $this->library->index();
-        rename($this->root . '/photos', $this->root . '/offline');
+        $this->indexMeer();
+        unlink($this->root . '/.data/onedrive-source.json');
         try {
             $this->library->index();
             $this->fail('Expected an unavailable source to abort indexing.');
@@ -1429,147 +1216,46 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(['Meer', 'Strand'], $result->tags);
     }
 
-    public function testLimitedScanDoesNotHideUnvisitedPhotos(): void
+    public function testPartialEnumerationDoesNotHideExistingPhotos(): void
     {
+        $this->indexMeer();
+        $this->queue([$this->item('berge', 'Berge.jpg', 'urlaub')], complete: false);
         $this->library->index();
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Berge.jpg');
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Wald.jpg');
-        $this->assertSame(1, $this->library->index(limit: 1));
-        $this->assertCount(2, $this->library->photos());
-        $this->library->index();
+        $this->assertCount(1, $this->library->photos());
+        $this->index([$this->item('wald', 'Wald.jpg', 'urlaub')]);
         $this->assertCount(3, $this->library->photos());
     }
 
-    public function testScanFingerprintsAlbumsWithoutDecodingImages(): void
+    public function testImportMapsFoldersToAlbumsWithoutDownloadingImages(): void
     {
+        $items = [$this->folder('urlaub', 'Urlaub'), $this->item('meer', 'Meer.jpg', 'urlaub')];
         for ($number = 0; $number < 12; $number++) {
-            mkdir($this->root . '/photos/album-' . $number);
-            file_put_contents($this->root . '/photos/album-' . $number . '/photo.jpg', 'not decoded ' . $number);
+            $items[] = $this->folder('album-' . $number, 'album-' . $number);
+            $items[] = $this->item('photo-' . $number, 'photo.jpg', 'album-' . $number);
         }
+        $this->client->pages[] = [
+            'value' => [['id' => 'root', 'name' => 'FOTOS', 'folder' => []], ...$items],
+            '@odata.deltaLink' => OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture'
+        ];
         $this->assertSame(13, $this->library->index());
         $this->assertSame(
             13,
             (int) $this->library->database->query('SELECT COUNT(DISTINCT album) FROM photos')->fetchColumn()
         );
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.jpg'));
-    }
-
-    public function testScanProgressCountsUnchangedPhotosAcrossResumedBatches(): void
-    {
-        $this->library->index();
-        mkdir($this->root . '/photos/2026+');
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/2026+/new.jpg');
-        $this->assertSame(1, $this->library->index(limit: 1));
-        $scan = json_decode($this->library->database->query('SELECT state FROM scan_state')->fetchColumn());
-        $this->assertSame(1, $scan->progress->checked);
-        $this->assertSame(1, $scan->progress->changed);
-        $this->assertSame('2026+', $scan->progress->folder);
-        $this->library = new PhotoButler($this->root);
-        $this->assertSame(0, $this->library->index(limit: 1));
-        $scan = json_decode($this->library->database->query('SELECT state FROM scan_state')->fetchColumn());
-        $this->assertSame(2, $scan->progress->checked);
-        $this->assertSame(1, $scan->progress->changed);
-        $this->assertFalse($scan->progress->partial);
-        $this->assertSame('Urlaub', $scan->progress->folder);
-    }
-
-    public function testLegacyScanProgressExplicitlyCountsOnlySinceContinuation(): void
-    {
-        $this->library->index(limit: 1);
-        $saved = json_decode($this->library->database->query('SELECT state FROM scan_state')->fetchColumn());
-        unset($saved->progress);
-        $this->library->database->prepare('UPDATE scan_state SET state = ?')->execute([json_encode($saved)]);
-        $this->library = new PhotoButler($this->root);
-        $this->library->index();
-        $progress = new ReflectionProperty(PhotoButler::class, 'scanProgress')->getValue($this->library);
-        $this->assertTrue($progress->partial);
-        $this->assertSame(0, $progress->checked);
-        $this->assertSame(0, $progress->changed);
-    }
-
-    public function testScanResumesAcrossInstancesAndFinishesUnchangedBatches(): void
-    {
-        for ($number = 0; $number < 5; $number++) {
-            $this->copyDistinctPhoto(
-                $this->root . '/photos/Urlaub/Meer.jpg',
-                $this->root . '/photos/Urlaub/photo-' . $number . '.jpg'
-            );
-        }
-        $this->assertSame(2, $this->library->index(limit: 2));
-        $this->library = new PhotoButler($this->root);
-        $this->assertSame(2, $this->library->index(limit: 2));
-        $this->library->index();
-        $this->assertCount(6, $this->library->photos());
-        unlink($this->root . '/photos/Urlaub/photo-4.jpg');
-        $this->assertSame(0, $this->library->index(limit: 2));
-        $this->assertCount(6, $this->library->photos());
-        $this->assertSame(1, (int) $this->library->database->query('SELECT COUNT(*) FROM scan_state')->fetchColumn());
-        $this->library->index();
-        $this->assertCount(5, $this->library->photos());
-        $this->assertSame(0, (int) $this->library->database->query('SELECT COUNT(*) FROM scan_state')->fetchColumn());
-    }
-
-    public function testPhotoPreviewsAreLimitedTo640Pixels(): void
-    {
-        $source = $this->root . '/photos/Urlaub/Meer.jpg';
-        imagejpeg(imagecreatetruecolor(1920, 1080), $source);
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
-        $size = getimagesize($this->library->imagePath($id));
-        $this->assertSame(640, $size[0]);
-        $this->assertSame(360, $size[1]);
-        $this->assertSame(1920, $this->library->photo($id)->width);
-    }
-
-    public function testThumbnailIsBoundedAndReusedByPathWithoutChangingOriginal(): void
-    {
-        $source = $this->root . '/photos/Urlaub/Meer.jpg';
-        $image = imagecreatetruecolor(2400, 1600);
-        for ($y = 0; $y < 1600; $y++) {
-            for ($x = 0; $x < 2400; $x++) {
-                imagesetpixel($image, $x, $y, (($x * 73856093) ^ ($y * 19349663)) & 0xffffff);
-            }
-        }
-        imagejpeg($image, $source, 100);
-        clearstatcache();
-        $hash = hash_file('sha256', $source);
-        $this->assertGreaterThan(500000, filesize($source));
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
         $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
-        $thumbnail = $this->library->imagePath($id);
-        $this->assertNotNull($thumbnail);
-        [$width, $height] = getimagesize($thumbnail);
-        $this->assertSame(640, $width);
-        $this->assertEqualsWithDelta(1.5, $width / $height, 0.005);
-        touch($thumbnail, 1234567890);
-        $this->assertSame($thumbnail, $this->library->imagePath($id));
-        clearstatcache();
-        $this->assertSame(1234567890, filemtime($thumbnail));
-        $this->assertSame($hash, hash_file('sha256', $source));
-        $this->assertSame($source, $this->library->imagePath($id, original: true));
-        imagejpeg(imagecreatetruecolor(100, 60), $source);
-        touch($source, time() + 2);
-        clearstatcache();
-        $this->library->index();
-        $this->assertFileExists($thumbnail);
-        $this->assertSame([640, 427], array_slice(getimagesize($this->library->imagePath($id)), 0, 2));
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*.tmp'));
+        $this->assertSame([], $this->client->downloads);
     }
 
-    public function testThumbnailJobLeavesLegacyMediumCacheAndOriginalUntouched(): void
+    public function testThumbnailJobLeavesLegacyMediumCacheUntouched(): void
     {
-        $source = $this->root . '/photos/Urlaub/Meer.jpg';
-        imagejpeg(imagecreatetruecolor(2400, 1800), $source);
-        $originalHash = hash_file('sha256', $source);
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
+        $id = $this->indexMeer();
+        $this->library->oneDrive->previews([$id]);
         $thumbnail = $this->library->imagePath($id);
         $legacy = $thumbnail . '.detail.jpg';
         file_put_contents($legacy, 'legacy medium fixture');
         touch($legacy, 1234567890);
         $this->library->database->exec("INSERT INTO job_timings VALUES ('previews', 9999)");
-        $this->library = new PhotoButler($this->root);
+        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
         $this->assertNull($this->library->jobs->all()['previews']['eta_seconds']);
         $job = $this->library->jobs->start('previews');
         $state = $this->library->jobs->step('previews', $job['token']);
@@ -1578,41 +1264,35 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(0, $state['errors']);
         $this->assertSame('legacy medium fixture', file_get_contents($legacy));
         $this->assertSame(1234567890, filemtime($legacy));
-        $this->assertSame($originalHash, hash_file('sha256', $source));
-        touch($source, time() + 2);
-        clearstatcache();
-        $this->library->index();
-        $this->assertFileExists($thumbnail);
-        $this->assertSame('legacy medium fixture', file_get_contents($legacy));
-        $this->assertSame([640, 480], array_slice(getimagesize($this->library->imagePath($id)), 0, 2));
-        $this->assertSame([$legacy], glob($this->root . '/.data/thumbnails/*.detail*'));
+        $this->assertSame(['meer'], $this->client->downloads);
+        $this->library->jobs->reset('previews');
+        $this->assertFileDoesNotExist($thumbnail);
+        $this->assertSame([$legacy], glob($this->root . '/.data/thumbnails/*'));
     }
 
-    public function testExistingThumbnailIsReusedWithoutRegeneration(): void
+    public function testExistingThumbnailIsReusedWithoutRedownload(): void
     {
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
+        $id = $this->indexMeer();
+        $this->library->oneDrive->previews([$id]);
         $thumbnail = $this->library->imagePath($id);
         $hash = hash_file('sha256', $thumbnail);
         touch($thumbnail, 1234567890);
-        $this->library = new PhotoButler($this->root);
-        $this->assertSame($thumbnail, $this->library->imagePath($id, animated: true));
+        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
+        $this->assertSame([$id => true], $this->library->oneDrive->previews([$id]));
+        $this->assertSame($thumbnail, $this->library->imagePath($id));
         clearstatcache();
         $this->assertSame(1234567890, filemtime($thumbnail));
         $this->assertSame($hash, hash_file('sha256', $thumbnail));
+        $this->assertSame(['meer'], $this->client->downloads);
     }
 
-    public function testCachedOnlyLookupAndRepeatJobDoNotRequireTheOriginal(): void
+    public function testRepeatedThumbnailJobsReuseCachesAndRestoreMissingFiles(): void
     {
-        $this->library->index();
-        $thumbnail = $this->library->imagePath(1);
-        $original = $this->root . '/photos/Urlaub/Meer.jpg';
-        rename($original, $original . '.offline');
+        $id = $this->indexMeer();
+        $this->library->oneDrive->previews([$id]);
+        $thumbnail = $this->library->imagePath($id);
         touch($thumbnail, 1234567890);
-
-        $this->assertSame($thumbnail, $this->library->imagePath(1, cachedOnly: true));
-        $this->assertNull($this->library->imagePath(1));
-        $this->assertNull($this->library->imagePath(1, original: true, cachedOnly: true));
+        $this->assertSame($thumbnail, $this->library->imagePath($id, cachedOnly: true));
         foreach ([1, 2] as $repeat) {
             $run = $this->library->jobs->start('previews');
             $run = $this->library->jobs->step('previews', $run['token']);
@@ -1620,58 +1300,57 @@ final class PhotoButlerTest extends TestCase
             $this->assertSame(1, $run['completed']);
             $this->assertSame(0, $run['errors']);
         }
-        $this->assertSame([], glob($this->root . '/.data/preview-worker-*.socket'));
+        clearstatcache();
         $this->assertSame(1234567890, filemtime($thumbnail));
-        $this->assertNull($this->library->imagePath(1, animated: true, cachedOnly: false));
-        file_put_contents($thumbnail . '.webp', 'cached animation');
-        $this->assertSame($thumbnail . '.webp', $this->library->imagePath(1, animated: true, cachedOnly: true));
+        $this->assertSame(['meer'], $this->client->downloads);
         unlink($thumbnail);
-        $this->assertSame($thumbnail . '.webp', $this->library->imagePath(1, animated: true, cachedOnly: true));
-        $this->assertNull($this->library->imagePath(1, cachedOnly: true));
-        unlink($thumbnail . '.webp');
-        $this->assertNull($this->library->imagePath(1, animated: true, cachedOnly: true));
-
-        rename($original . '.offline', $original);
+        $this->assertNull($this->library->imagePath($id, cachedOnly: true));
+        $this->assertNull($this->library->imagePath($id));
         $run = $this->library->jobs->start('previews');
         $this->assertSame('done', $this->library->jobs->step('previews', $run['token'])['status']);
         $this->assertFileExists($thumbnail);
+        $this->assertSame(['meer', 'meer'], $this->client->downloads);
     }
 
-    public function testCachedOnlyLookupStillRejectsUnavailableOrUnconfiguredPhotos(): void
+    public function testCachedOnlyLookupStillRejectsUnavailableOrUnmappedPhotos(): void
     {
-        $this->library->index();
-        $this->library->imagePath(1);
+        $id = $this->indexMeer();
+        $this->library->oneDrive->previews([$id]);
+        $this->assertNotNull($this->library->imagePath($id, cachedOnly: true));
         $this->library->database->exec('UPDATE photos SET available = 0');
-        $this->assertNull($this->library->imagePath(1, cachedOnly: true));
-        $this->library->database->exec("UPDATE photos SET available = 1, root = '/unconfigured'");
-        $this->assertNull($this->library->imagePath(1, cachedOnly: true));
+        $this->assertNull($this->library->imagePath($id, cachedOnly: true));
+        $this->library->database->exec('UPDATE photos SET available = 1; DELETE FROM onedrive_photos');
+        $this->assertNull($this->library->imagePath($id, cachedOnly: true));
         $this->assertNull($this->library->imagePath(999, cachedOnly: true));
     }
 
-    public function testMissingThumbnailPreservesAiTagsAndIsRebuiltOnDemand(): void
+    public function testMissingThumbnailPreservesAiTagsAndIsRestoredByTheThumbnailJob(): void
     {
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
+        $id = $this->indexMeer();
+        $this->library->oneDrive->previews([$id]);
         $thumbnail = $this->library->imagePath($id);
         $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Meer\"]'");
         unlink($thumbnail);
-        $this->assertSame(0, $this->library->index());
+        $this->index([]);
         $this->assertSame('done', $this->library->photo($id)->status);
         $this->assertSame(['Meer'], $this->library->photo($id)->tags);
+        $this->assertNull($this->library->imagePath($id));
+        $this->assertSame(['meer'], $this->client->downloads);
+        $run = $this->library->jobs->start('previews');
+        $this->library->jobs->step('previews', $run['token']);
         $this->assertFileExists($this->library->imagePath($id));
     }
 
-    public function testUnreadablePreviewIsDeferredWithoutBlockingOtherPhotos(): void
+    public function testMissingPreviewIsDeferredWithoutBlockingOtherPhotos(): void
     {
-        file_put_contents($this->root . '/photos/Urlaub/Meer.jpg', 'unavailable image contents');
-        imagejpeg(imagecreatetruecolor(80, 60), $this->root . '/photos/Urlaub/Zweiter.jpg');
         file_put_contents(
             $this->root . '/.data/.env',
             "AI_PROVIDER=cliproxyapi\nAI_MODEL=test\nAI_BASE_URL=http://127.0.0.1:1\nAI_API_KEY=test-only\n",
             FILE_APPEND
         );
-        $this->library = new PhotoButler($this->root);
-        $this->library->index();
+        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
+        $this->index([$this->item('a', 'Meer.jpg'), $this->item('b', 'Zweiter.jpg')]);
+        $this->library->oneDrive->previews([2]);
         $this->assertSame(0, $this->library->tag(limit: 1));
         $this->assertSame('error', $this->library->photo(1)->status);
         $this->assertSame('pending', $this->library->photo(2)->status);
@@ -1681,8 +1360,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testOversizedManualTagsAreRejectedWithoutReplacingExistingTags(): void
     {
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
+        $id = $this->indexMeer();
         $this->library->saveTags($id, 'Meer');
         try {
             $this->library->saveTags($id, str_repeat('a', 61));
@@ -1690,236 +1368,6 @@ final class PhotoButlerTest extends TestCase
         } catch (InvalidArgumentException) {
             $this->assertSame(['Meer'], $this->library->photo($id)->tags);
         }
-    }
-
-    public function testPreviewWorkersProcessTwoImagesWithoutWaitingForTheFirst(): void
-    {
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Second.jpg');
-        $this->library->index();
-        $this->assertNull($this->library->imagePath(1, cachedOnly: true));
-        $this->assertSame([], glob($this->root . '/.data/preview-worker-*.socket'));
-        $lock = fopen($this->root . '/.data/thumbnail-1.lock', 'c');
-        flock($lock, LOCK_EX);
-        $process = proc_open(
-            [
-                'php',
-                '-r',
-                'require ' .
-                var_export(dirname(__DIR__) . '/vendor/autoload.php', true) .
-                '; echo json_encode((new \\vielhuber\\photobutler\\PreviewPool(' .
-                var_export($this->root . '/.data', true) .
-                '))->render([1, 2]));'
-            ],
-            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes
-        );
-        try {
-            $deadline = microtime(true) + 10;
-            do {
-                usleep(20000);
-                clearstatcache();
-                $second = $this->library->imagePath(2, cachedOnly: true);
-            } while ($second === null && microtime(true) < $deadline);
-            $this->assertNotNull($second, 'The second image must complete while the first image is blocked.');
-            $this->assertNull($this->library->imagePath(1, cachedOnly: true));
-        } finally {
-            flock($lock, LOCK_UN);
-            fclose($lock);
-            $output = stream_get_contents($pipes[1]);
-            $error = stream_get_contents($pipes[2]);
-            fclose($pipes[1]);
-            fclose($pipes[2]);
-            $this->assertSame(0, proc_close($process), $error);
-        }
-        $this->assertSame([1 => true, 2 => true], json_decode($output, true, flags: JSON_THROW_ON_ERROR));
-        $this->expectException(InvalidArgumentException::class);
-        new \vielhuber\photobutler\PreviewPool($this->root . '/.data')->render([1, 2, 3]);
-    }
-
-    public function testPreviewWorkersAreReusedAndExpireWithoutAutomaticWork(): void
-    {
-        $this->copyDistinctPhoto($this->root . '/photos/Urlaub/Meer.jpg', $this->root . '/photos/Urlaub/Second.jpg');
-        $this->library->index();
-        $pool = new \vielhuber\photobutler\PreviewPool($this->root . '/.data');
-        $this->assertSame([], glob($this->root . '/.data/preview-worker-*.socket'));
-        $this->assertSame([1 => true, 2 => true], $pool->render([1, 2]));
-        $files = glob($this->root . '/.data/preview-worker-*.socket');
-        $this->assertCount(2, $files);
-        $sockets = array_map('file_get_contents', $files);
-        $this->assertSame(
-            [1 => true, 2 => true],
-            new \vielhuber\photobutler\PreviewPool($this->root . '/.data')->render([1, 2])
-        );
-        $this->assertSame($sockets, array_map('file_get_contents', $files));
-        $reopened = new PhotoButler($this->root);
-        $this->assertSame('idle', $reopened->jobs->all()['previews']['status']);
-        $deadline = microtime(true) + 10;
-        do {
-            usleep(100000);
-            clearstatcache();
-        } while (glob($this->root . '/.data/preview-worker-*.socket') !== [] && microtime(true) < $deadline);
-        $this->assertSame([], glob($this->root . '/.data/preview-worker-*.socket'));
-        foreach ($sockets as $socket) {
-            $this->assertFileDoesNotExist($socket);
-            $this->assertDirectoryDoesNotExist(dirname($socket));
-        }
-        $run = $reopened->jobs->start('previews');
-        $this->assertSame('done', $reopened->jobs->step('previews', $run['token'])['status']);
-        $this->assertSame([], glob($this->root . '/.data/preview-worker-*.socket'));
-    }
-
-    public function testPreviewWorkersReloadSourcesAndRecoverAfterCacheRemoval(): void
-    {
-        $this->library->index();
-        $pool = new \vielhuber\photobutler\PreviewPool($this->root . '/.data');
-        $directory = sys_get_temp_dir() . '/photobutler-preview-' . bin2hex(random_bytes(8));
-        mkdir($directory, 0700);
-        file_put_contents($this->root . '/.data/preview-worker-1.socket', $directory . '/worker.sock');
-        $this->assertSame([1 => true], $pool->render([1]));
-        $this->assertDirectoryDoesNotExist($directory);
-        $registry = $this->root . '/.data/preview-worker-1.socket';
-        $socket = file_get_contents($registry);
-        foreach (glob($this->root . '/.data/thumbnails/*') as $cache) {
-            unlink($cache);
-        }
-        $this->assertSame([1 => true], $pool->render([1]));
-        $this->assertCount(1, glob($this->root . '/.data/thumbnails/*'));
-        $config = file_get_contents($this->root . '/.data/.env');
-        mkdir($this->root . '/other');
-        file_put_contents($this->root . '/.data/.env', str_replace('/photos', '/other', $config));
-        $this->assertSame([1 => false], $pool->render([1]));
-        file_put_contents($this->root . '/.data/.env', $config);
-        $this->assertSame([1 => true], $pool->render([1]));
-        $this->assertSame($socket, file_get_contents($registry));
-        $this->assertSame('idle', $this->library->jobs->all()['previews']['status']);
-    }
-
-    public function testPhotoRendererDetectsReplacedSourcesAndRecoversAfterInvalidImages(): void
-    {
-        $renderer = new \vielhuber\photobutler\PhotoRenderer();
-        $source = $this->root . '/photos/Urlaub/Meer.jpg';
-        $target = $this->root . '/.data/rendered.jpg';
-        $renderer->render(source: $source, target: $target, edge: 640, quality: 65);
-        $this->assertSame([80, 60], array_slice(getimagesize($target), 0, 2));
-        imagejpeg(imagecreatetruecolor(120, 90), $source);
-        $renderer->render(source: $source, target: $target, edge: 640, quality: 65);
-        $this->assertSame([120, 90], array_slice(getimagesize($target), 0, 2));
-        file_put_contents($source, 'invalid');
-        try {
-            $renderer->render(source: $source, target: $target, edge: 640, quality: 65);
-            $this->fail('Invalid images must not reuse the previous pixel buffer.');
-        } catch (RuntimeException) {
-            $this->assertFileDoesNotExist($target . '.tmp');
-        }
-        imagejpeg(imagecreatetruecolor(160, 120), $source);
-        $renderer->render(source: $source, target: $target, edge: 640, quality: 65);
-        $this->assertSame([160, 120], array_slice(getimagesize($target), 0, 2));
-    }
-
-    public function testLargePhotoRendererPreservesEveryExifOrientation(): void
-    {
-        $this->library = new PhotoButler($this->root, photoRenderer: new \vielhuber\photobutler\PhotoRenderer());
-        $source = $this->root . '/photos/Urlaub/Meer.jpg';
-        $image = imagecreatetruecolor(3200, 2400);
-        imagefilledrectangle($image, 0, 0, 1599, 1199, 0xf00000);
-        imagejpeg($image, $source, 100);
-        $jpeg = file_get_contents($source);
-        foreach (
-            [1 => [0, 0], 2 => [1, 0], 3 => [1, 1], 4 => [0, 1], 5 => [0, 0], 6 => [1, 0], 7 => [1, 1], 8 => [0, 1]]
-            as $orientation => [$right, $bottom]
-        ) {
-            $exif =
-                "Exif\0\0II" . pack('vVv', 42, 8, 1) . pack('vvVv', 0x0112, 3, 1, $orientation) . "\0\0" . pack('V', 0);
-            file_put_contents(
-                $source,
-                substr($jpeg, 0, 2) . "\xff\xe1" . pack('n', strlen($exif) + 2) . $exif . substr($jpeg, 2)
-            );
-            touch($source, time() + $orientation);
-            clearstatcache();
-            $this->library->index();
-            $id = $this->library->photos()[0]->id;
-            $this->library->jobs->reset('previews');
-            $thumbnail = $this->library->imagePath($id);
-            $size = $orientation >= 5 ? [480, 640] : [640, 480];
-            $this->assertSame($size, array_slice(getimagesize($thumbnail), 0, 2));
-            $preview = imagecreatefromjpeg($thumbnail);
-            $color = imagecolorsforindex(
-                $preview,
-                imagecolorat($preview, $right ? $size[0] - 10 : 10, $bottom ? $size[1] - 10 : 10)
-            );
-            $this->assertGreaterThan(200, $color['red']);
-            $this->assertArrayNotHasKey('Orientation', exif_read_data($thumbnail));
-        }
-    }
-
-    public function testJpegPixelLimitStaysBoundedAndOtherFormatsKeepTheirLimit(): void
-    {
-        $source = $this->root . '/photos/Urlaub/Meer.jpg';
-        $jpeg = file_get_contents($source);
-        $marker = strpos($jpeg, "\xff\xc0");
-        $this->assertNotFalse($marker);
-        $jpeg = substr_replace($jpeg, pack('nn', 9000, 15000), $marker + 5, 4);
-        file_put_contents($source, $jpeg);
-        $this->library->index();
-        $this->assertNull($this->library->imagePath(1));
-        $this->assertSame($jpeg, file_get_contents($source));
-
-        imagepng(imagecreatetruecolor(1, 1), $source);
-        $png = substr_replace(file_get_contents($source), pack('NN', 12000, 9000), 16, 8);
-        file_put_contents($source, $png);
-        clearstatcache();
-        $this->library->index();
-        $this->assertNull($this->library->imagePath(1));
-        $this->assertSame($png, file_get_contents($source));
-        $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
-    }
-
-    public function testBrokenOptionalExifDoesNotBlockGdOrWorkerThumbnails(): void
-    {
-        $source = $this->root . '/photos/Urlaub/Meer.jpg';
-        foreach ([80, 1600] as $width) {
-            imagejpeg(imagecreatetruecolor($width, 60), $source);
-            $jpeg = file_get_contents($source);
-            $exif = 'broken metadata';
-            $original = substr($jpeg, 0, 2) . "\xff\xe1" . pack('n', strlen($exif) + 2) . $exif . substr($jpeg, 2);
-            file_put_contents($source, $original);
-            touch($source, 1234567890 + $width);
-            clearstatcache();
-            $this->library->index();
-            $this->library->jobs->reset('previews');
-            $run = $this->library->jobs->start('previews');
-            $state = $this->library->jobs->step('previews', $run['token']);
-            $this->assertSame('done', $state['status']);
-            $this->assertSame(0, $state['errors']);
-            $this->assertNotNull($this->library->imagePath(1, cachedOnly: true));
-            $this->assertSame(date('Y-m-d H:i:s', 1234567890 + $width), $this->library->photo(1)->taken);
-            $this->assertSame($original, file_get_contents($source));
-        }
-    }
-
-    public function testExifTransposeAndMetadataStripping(): void
-    {
-        $path = $this->root . '/photos/Urlaub/Meer.jpg';
-        $image = imagecreatetruecolor(80, 60);
-        imagefilledrectangle($image, 0, 0, 39, 29, imagecolorallocate($image, 240, 0, 0));
-        imagejpeg($image, $path, 100);
-        $jpeg = file_get_contents($path);
-        $exif = "Exif\0\0II" . pack('vVv', 42, 8, 1) . pack('vvVv', 0x0112, 3, 1, 5) . "\0\0" . pack('V', 0);
-        file_put_contents(
-            $path,
-            substr($jpeg, 0, 2) . "\xff\xe1" . pack('n', strlen($exif) + 2) . $exif . substr($jpeg, 2)
-        );
-        $this->assertSame(5, exif_read_data($path)['Orientation']);
-        $this->library->index();
-        $photo = $this->library->photos()[0];
-        $thumbnail = $this->library->imagePath($photo->id);
-        $photo = $this->library->photo($photo->id);
-        $this->assertSame(60, $photo->width);
-        $this->assertSame(80, $photo->height);
-        $preview = imagecreatefromjpeg($thumbnail);
-        $color = imagecolorsforindex($preview, imagecolorat($preview, 5, 5));
-        $this->assertGreaterThan(200, $color['red']);
-        $this->assertArrayNotHasKey('Orientation', exif_read_data($thumbnail));
     }
 
     public function testInitializerPreservesIndentedCredentials(): void
@@ -1939,6 +1387,32 @@ final class PhotoButlerTest extends TestCase
         );
         fclose($pipes[0]);
         $this->assertSame(0, proc_close($process));
+        $this->assertSame($env, file_get_contents($envPath));
+    }
+
+    public function testInitializerGeneratesAMissingCronSecretOnce(): void
+    {
+        $envPath = $this->root . '/.data/.env';
+        file_put_contents($envPath, preg_replace('/^CRON_SECRET=.*\R/m', '', file_get_contents($envPath)));
+        $initialize = function (): void {
+            $process = proc_open(
+                [PHP_BINARY, dirname(__DIR__) . '/bin/photobutler-init'],
+                [
+                    0 => ['pipe', 'r'],
+                    1 => ['file', $this->root . '/init.log', 'a'],
+                    2 => ['file', $this->root . '/init.log', 'a']
+                ],
+                $pipes,
+                $this->root
+            );
+            fclose($pipes[0]);
+            $this->assertSame(0, proc_close($process));
+        };
+        $initialize();
+        $env = file_get_contents($envPath);
+        $this->assertSame(1, preg_match_all('/^CRON_SECRET=[a-f0-9]{64}$/m', $env));
+        $this->assertStringContainsString("JWT_SECRET=photobutler-test-signing-secret-32-bytes\n", $env);
+        $initialize();
         $this->assertSame($env, file_get_contents($envPath));
     }
 
@@ -1998,8 +1472,7 @@ final class PhotoButlerTest extends TestCase
 
     public function testWebAuthenticationCsrfAndPhotoAccess(): void
     {
-        $this->library->index();
-        $id = $this->library->photos()[0]->id;
+        $id = $this->indexMeer();
         $this->library->priority($id, 1);
         mkdir($this->root . '/public');
         file_put_contents(
@@ -2069,6 +1542,10 @@ final class PhotoButlerTest extends TestCase
             $this->assertSame(401, $request('?photo=' . $id . '&size=thumb')[0]);
             $this->assertSame(404, $request('.data/.env')[0]);
             $this->assertSame(404, $request('vendor/autoload.php')[0]);
+            foreach (['?cron=wrong', '?cron=', '?cron[]=photobutler-test-cron-secret-with-32-bytes'] as $cron) {
+                $this->assertSame(403, $request($cron)[0]);
+            }
+            $this->assertSame([], $this->library->database->query('SELECT * FROM job_logs')->fetchAll());
             $this->assertSame(
                 403,
                 $request('index.php/login', [
@@ -2118,21 +1595,18 @@ final class PhotoButlerTest extends TestCase
             [$status, $body] = $request('');
             $this->assertSame(200, $status);
             $this->assertStringContainsString('data-photo="' . $id . '"', $body);
-            rename($this->root . '/photos', $this->root . '/temporarily-unavailable');
+            $source = $this->root . '/.data/onedrive-source.json';
+            rename($source, $source . '.offline');
             try {
                 [$status, $jobsBody] = $request('?view=jobs');
                 $this->assertSame(200, $status);
                 $jobsDocument = \Dom\HTMLDocument::createFromString($jobsBody, LIBXML_NOERROR);
                 $this->assertSame(4, $jobsDocument->querySelectorAll('[data-job]')->length);
-                $this->assertStringContainsString(
-                    'Fotoquelle nicht verfügbar.',
-                    $jobsDocument->querySelector('[data-job="scan"] [data-job-message]')->textContent
-                );
                 [$status, $jobsBody] = $request('?jobs=1');
                 $this->assertSame(200, $status);
                 $this->assertCount(4, json_decode($jobsBody, true, flags: JSON_THROW_ON_ERROR));
             } finally {
-                rename($this->root . '/temporarily-unavailable', $this->root . '/photos');
+                rename($source . '.offline', $source);
             }
             foreach (['newest', 'oldest', 'month_asc', 'month_desc', 'invalid', 'sort[]=oldest'] as $sort) {
                 $query = $sort === 'sort[]=oldest' ? $sort : 'sort=' . $sort;
@@ -2190,13 +1664,14 @@ final class PhotoButlerTest extends TestCase
                 $this->assertStringContainsString('--root=' . escapeshellarg($this->root), $command);
                 $this->assertStringEndsWith('--' . $job . '-only', $command);
             }
+            $this->assertStringNotContainsString('photobutler-test-cron-secret', $body);
             $this->assertSame(404, $request('?photo=' . $id . '&size=thumb')[0]);
             $this->assertNull($this->library->imagePath($id, cachedOnly: true));
             $run = $this->library->jobs->start('previews');
             $this->assertSame('done', $this->library->jobs->step('previews', $run['token'])['status']);
             $this->assertSame(200, $request('?photo=' . $id . '&size=thumb')[0]);
             $etags = [];
-            foreach (['thumb', 'display', 'detail', 'original'] as $size) {
+            foreach (['thumb', 'display'] as $size) {
                 $url = '?photo=' . $id . '&size=' . $size;
                 [$status, $body, $headers] = $request($url);
                 $this->assertSame(200, $status);
@@ -2212,30 +1687,29 @@ final class PhotoButlerTest extends TestCase
                 }
                 $this->assertSame(200, $request($url, headers: ['If-None-Match: "outdated"'])[0]);
             }
-            $source = $this->root . '/photos/Urlaub/Meer.jpg';
-            $image = imagecreatetruecolor(80, 60);
+            $this->index([$this->item('meer', 'Meer.jpg', 'urlaub', version: 'v2')]);
+            $this->assertSame(
+                404,
+                $request('?photo=' . $id . '&size=thumb', headers: ['If-None-Match: ' . $etags['thumb']])[0]
+            );
+            $image = imagecreatetruecolor(16, 12);
             imagefill($image, 0, 0, imagecolorallocate($image, 255, 0, 0));
-            imagejpeg($image, $source);
-            touch($source, time() + 2);
-            clearstatcache();
-            $this->library->index();
+            ob_start();
+            imagejpeg($image);
+            $this->client->jpeg = ob_get_clean();
+            $run = $this->library->jobs->start('previews');
+            $this->assertSame('done', $this->library->jobs->step('previews', $run['token'])['status']);
             foreach ($etags as $size => $etag) {
-                [$status, $body, $headers] = $request(
+                [$status, , $headers] = $request(
                     '?photo=' . $id . '&size=' . $size,
                     headers: ['If-None-Match: ' . $etag]
                 );
-                if (in_array($size, ['thumb', 'display'], true)) {
-                    $this->assertSame(304, $status);
-                    $this->assertSame($etag, $headers['etag']);
-                    continue;
-                }
                 $this->assertSame(200, $status);
                 $this->assertNotSame($etag, $headers['etag']);
             }
-            $this->assertStringContainsString(
-                'no-store',
-                $request('?photo=' . $id . '&size=original&download=1')[2]['cache-control']
-            );
+            [, , $headers] = $request('?photo=' . $id . '&size=thumb&download=1');
+            $this->assertStringContainsString('no-store', $headers['cache-control']);
+            $this->assertStringStartsWith('attachment;', $headers['content-disposition']);
             [$status, $body] = $request('?detail=' . $id);
             $this->assertSame(200, $status);
             $detail = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
@@ -2350,6 +1824,22 @@ final class PhotoButlerTest extends TestCase
                     'csrf' => $match[1]
                 ])[0]
             );
+            [$status, $body, $headers] = $request('?cron=photobutler-test-cron-secret-with-32-bytes');
+            $this->assertSame(200, $status);
+            $this->assertStringContainsString('text/plain', $headers['content-type']);
+            $this->assertStringContainsString("Galerie einlesen: OneDrive erneut anmelden: --onedrive-login.\n", $body);
+            $this->assertStringContainsString("Thumbnails downloaden: done · 100 % · 0 Fehler\n", $body);
+            $this->assertStringContainsString("KI-Tagging: übersprungen (KI nicht konfiguriert)\n", $body);
+            $this->assertStringContainsString(
+                "Gesichtertagging: übersprungen (Gesichtserkennung nicht installiert)\n",
+                $body
+            );
+            $this->assertSame('paused', $this->library->jobs->all()['scan']['status']);
+            file_put_contents(
+                $this->root . '/.data/.env',
+                preg_replace('/^CRON_SECRET=.*$/m', 'CRON_SECRET=short', file_get_contents($this->root . '/.data/.env'))
+            );
+            $this->assertSame(503, $request('?cron=short')[0]);
         } finally {
             proc_terminate($process);
             proc_close($process);

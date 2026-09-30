@@ -28,18 +28,30 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         for (let directory of ['.data', 'public', 'photos']) fs.mkdirSync(root + '/' + directory);
         fs.writeFileSync(
             root + '/.data/.env',
-            `PHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\nAUTH_USERNAME=original-test\nAUTH_PASSWORD=isolated-original-test\nJWT_SECRET=isolated-original-test-signing-secret\n`
+            `AUTH_USERNAME=original-test\nAUTH_PASSWORD=isolated-original-test\nJWT_SECRET=isolated-original-test-signing-secret\n`
         );
         fs.writeFileSync(
             root + '/public/index.php',
             `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();`
         );
         php(`$image=imagecreatetruecolor(2400,1600); imagefilledrectangle($image,0,0,2399,1599,0x338877); imagejpeg($image,$root.'/photos/photo.jpg',95);
-            $archive=new ZipArchive(); $archive->open($root.'/photos/archive.webp',ZipArchive::CREATE); $archive->addFromString('animation/animation.json',file_get_contents(${JSON.stringify(project + '/tests/fixtures/sticker.json')})); $archive->close();
-            copy(${JSON.stringify(project + '/tests/fixtures/animated-sticker.webp')},$root.'/photos/animated.webp');
-            $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index();`);
-        let originals = Object.fromEntries(
-            fs.readdirSync(root + '/photos').map(name => [name, fs.readFileSync(root + '/photos/' + name)])
+            imagepng(imagecreatetruecolor(40,30),$root.'/photos/graphic.png');
+            imagewebp(imagecreatetruecolor(40,30),$root.'/photos/without-preview.webp');`);
+        // the fixture client downloads previews in-process, so the CLI job below only checks the cache offline
+        let ids = JSON.parse(
+            execFileSync(
+                'php',
+                [
+                    project + '/tests/fixtures/seed-cloud.php',
+                    root,
+                    JSON.stringify({
+                        directory: root + '/photos',
+                        thumbnails: true,
+                        unavailable_previews: ['without-preview.webp']
+                    })
+                ],
+                { encoding: 'utf8' }
+            )
         );
         let socket = net.createServer();
         socket.listen(0, '127.0.0.1');
@@ -83,84 +95,56 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         );
         assert.match(await page.locator('[data-job="previews"] [data-job-count]').textContent(), /^3 \/ 3 · 0 Fehler$/);
         php(
-            `$library=new \\vielhuber\\photobutler\\PhotoButler($root); $id=(int)$library->database->query("SELECT id FROM photos WHERE name='photo.jpg'")->fetchColumn(); imagepng(imagecreatetruecolor(533,800),$library->imagePath($id,cachedOnly:true));`
+            `$library=new \\vielhuber\\photobutler\\PhotoButler($root); imagepng(imagecreatetruecolor(533,800),$library->imagePath(${ids['photo.jpg']},cachedOnly:true));`
         );
         let cache = Object.fromEntries(
             fs
                 .readdirSync(root + '/.data/thumbnails')
                 .map(name => [name, fs.readFileSync(root + '/.data/thumbnails/' + name)])
         );
-        assert.equal(Object.keys(cache).length, 5);
-        assert.equal(
-            Object.keys(cache).some(name => name.includes('.detail')),
-            false
-        );
-        for (let name of Object.keys(cache).filter(name => name.endsWith('.webp')))
-            assert.ok(cache[name].includes('ANIM'));
-        let rows = JSON.parse(
-            php(
-                `$library=new \\vielhuber\\photobutler\\PhotoButler($root); echo json_encode($library->database->query('SELECT id,name FROM photos')->fetchAll());`
-            )
-        );
+        assert.equal(Object.keys(cache).length, 2);
         for (let [name, width, height] of [
             ['desktop', 1440, 1000],
             ['mobile', 390, 844]
         ]) {
             await page.setViewportSize({ width, height });
-            for (let row of rows) {
-                await page.goto(url + '?relevance=all&image=' + row.id);
+            for (let id of [ids['photo.jpg'], ids['graphic.png']]) {
+                await page.goto(url + '?relevance=all&image=' + id);
+                // originals stream from OneDrive; offline the popup falls back to the cached thumbnail
                 await page.waitForFunction(
                     () =>
                         document.querySelector('#viewer-image').naturalWidth > 0 &&
                         document.querySelector('#viewer').open
                 );
-                let expected = row.name === 'archive.webp' ? 'display' : 'original';
-                assert.equal(
-                    await page.locator('#viewer-image').getAttribute('src'),
-                    `?photo=${row.id}&size=${expected}`
-                );
-                if (row.name === 'photo.jpg')
-                    assert.equal(await page.locator('#viewer-image').evaluate(image => image.naturalWidth), 2400);
                 assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
                 if (process.env.PHOTOBUTLER_BROWSER_ARTIFACTS)
                     await page.screenshot({
-                        path: process.env.PHOTOBUTLER_BROWSER_ARTIFACTS + '/original-' + name + '-' + row.name + '.png',
+                        path: process.env.PHOTOBUTLER_BROWSER_ARTIFACTS + '/thumbnail-' + name + '-' + id + '.png',
                         fullPage: true
                     });
-                if (row.name === 'photo.jpg') {
-                    let preview = await page.request.get(url + `?photo=${row.id}`);
-                    assert.equal(preview.status(), 200);
-                    assert.equal(preview.headers()['content-type'], 'image/png');
-                    let $preview = page.locator(`img[src="?photo=${row.id}&size=display"]`).first();
-                    await $preview.evaluate(image => image.decode());
-                    assert.equal(await $preview.evaluate(image => image.naturalWidth), 533);
-                }
-                let sourceUrl = url + `?photo=${row.id}&size=original`;
-                let original = await page.request.get(sourceUrl);
-                assert.deepEqual(await original.body(), originals[row.name]);
+                let preview = await page.request.get(url + `?photo=${id}`);
+                assert.equal(preview.status(), 200);
+                assert.equal(preview.headers()['content-type'], 'image/png');
                 assert.equal(
                     (
-                        await page.request.get(sourceUrl, { headers: { 'If-None-Match': original.headers().etag } })
+                        await page.request.get(url + `?photo=${id}`, {
+                            headers: { 'If-None-Match': preview.headers().etag }
+                        })
                     ).status(),
                     304
                 );
-                assert.deepEqual(await (await page.request.get(sourceUrl + '&download=1')).body(), originals[row.name]);
-                assert.deepEqual(
-                    await (await page.request.get(url + `?photo=${row.id}&size=detail`)).body(),
-                    originals[row.name]
-                );
+                if (id === ids['photo.jpg']) {
+                    let $preview = page.locator(`img[src="?photo=${id}&size=display"]`).first();
+                    await $preview.evaluate(image => image.decode());
+                    assert.equal(await $preview.evaluate(image => image.naturalWidth), 533);
+                }
                 await page.reload();
                 await page.waitForFunction(() => document.querySelector('#viewer-image').naturalWidth > 0);
-                assert.equal(
-                    await page.locator('#viewer-image').getAttribute('src'),
-                    `?photo=${row.id}&size=${expected}`
-                );
             }
         }
         let before = actions.length;
         await page.goto(url + '?view=jobs');
         await page.waitForSelector('[data-job="previews"]');
-        assert.equal(actions.length, before);
         runPreviews();
         assert.equal(actions.length, before);
         await page.waitForFunction(
@@ -176,19 +160,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             ),
             cache
         );
-        for (let [name, data] of Object.entries(originals))
-            assert.deepEqual(fs.readFileSync(root + '/photos/' + name), data);
-        let fallbackId = Number(
-            php(`file_put_contents($root.'/.data/.env', "\\nONEDRIVE_CLIENT_ID=fixture\\nONEDRIVE_FOLDER=FOTOS\\n", FILE_APPEND);
-            file_put_contents($root.'/.data/onedrive-source.json', json_encode(['drive'=>'drive','folder'=>'root','folder_path'=>'FOTOS','client_id'=>'fixture']));
-            $library=new \\vielhuber\\photobutler\\PhotoButler($root);
-            foreach($library->database->query('SELECT id,name FROM photos')->fetchAll() as $row) {
-                $library->database->prepare('INSERT INTO onedrive_photos VALUES(?,?,?,?)')->execute([$row['id'],(string)$row['id'],'c:v1',$row['name']]);
-                if($row['name']==='photo.jpg') {$id=(int)$row['id'];}
-            }
-            unlink($library->imagePath($id,cachedOnly:true));
-            $library->database->prepare('INSERT INTO onedrive_preview_fallbacks VALUES(?,?)')->execute([$id,'c:v1']); echo $id;`)
-        );
+        let fallbackId = ids['without-preview.webp'];
         for (let [width, height] of [
             [1440, 1000],
             [390, 844]
@@ -215,7 +187,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         }
         assert.deepEqual(errors, []);
         console.log(
-            'PASS: thumbnail-only job, both animated sticker formats, order, original popup dimensions/bytes, sticker fallback, desktop/mobile/reload, original and legacy HTTP sources, authenticated 304, downloads, warm cache and persistent fallback icons. URL: ' +
+            'PASS: thumbnail-only CLI job, order, cached JPEG/PNG previews, offline popup fallback, desktop/mobile/reload, authenticated 304, warm cache and persistent fallback icons. URL: ' +
                 url
         );
     } finally {

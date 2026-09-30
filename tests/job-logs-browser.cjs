@@ -24,14 +24,24 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         for (let directory of ['.data', 'public', 'photos']) fs.mkdirSync(root + '/' + directory);
         fs.writeFileSync(
             root + '/.data/.env',
-            `PHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\nAUTH_USERNAME=logs-test\nAUTH_PASSWORD=isolated-logs-test\nJWT_SECRET=isolated-job-logs-signing-secret\n`
+            `AUTH_USERNAME=logs-test\nAUTH_PASSWORD=isolated-logs-test\nJWT_SECRET=isolated-job-logs-signing-secret\n`
         );
         fs.writeFileSync(
             root + '/public/index.php',
             `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();`
         );
         php(
-            `$image=imagecreatetruecolor(80,60); for($i=0;$i<4;$i++) { imagefill($image,0,0,imagecolorallocate($image,$i*40,0,0)); imagejpeg($image,$root.'/photos/'.$i.'.jpg'); } $library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->index(); $library->jobs->log('tag','<img src=x onerror=alert(1)>');`
+            `$image=imagecreatetruecolor(80,60); for($i=0;$i<4;$i++) { imagefill($image,0,0,imagecolorallocate($image,$i*40,0,0)); imagejpeg($image,$root.'/photos/'.$i.'.jpg'); }`
+        );
+        let seed = options =>
+            execFileSync('php', [
+                project + '/tests/fixtures/seed-cloud.php',
+                root,
+                JSON.stringify({ directory: root + '/photos', ...options })
+            ]);
+        seed();
+        php(
+            "$library=new \\vielhuber\\photobutler\\PhotoButler($root); $library->jobs->log('tag','<img src=x onerror=alert(1)>');"
         );
         let socket = net.createServer();
         socket.listen(0, '127.0.0.1');
@@ -102,9 +112,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         assert.equal((await exit)[0], 143);
         worker = null;
         assert.match(output, /Pausiert/);
-        assert.match(output, /50 %/);
         await page.waitForFunction(
-            () => document.querySelector('[data-job="previews"] [data-job-status]').textContent === '50 % · Pausiert'
+            () => document.querySelector('[data-job="previews"] [data-job-status]').textContent === '0 % · Pausiert'
         );
         for (let [name, width, height] of [
             ['desktop', 1440, 1000],
@@ -114,10 +123,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             await page.setViewportSize({ width, height });
             await page.reload();
             await page.waitForSelector('[data-job="previews"]');
-            assert.equal(
-                await page.locator('[data-job="previews"] [data-job-status]').textContent(),
-                '50 % · Pausiert'
-            );
+            assert.equal(await page.locator('[data-job="previews"] [data-job-status]').textContent(), '0 % · Pausiert');
             assert.equal(await page.locator('[data-job-log]').count(), 0);
             assert.equal(actions.length, count);
             assert.equal(await page.getByText('Eingelesene / vorhandene Dateien.', { exact: false }).count(), 0);
@@ -132,6 +138,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                     fullPage: true
                 });
         }
+        // the CLI cannot reach Graph offline; the fixture client downloads the previews the resumed run then reuses
+        seed({ thumbnails: true });
         let resumed = spawnSync('php', cliArguments, { encoding: 'utf8', timeout: 30000 });
         assert.equal(resumed.status, 0, resumed.stderr);
         assert.match(resumed.stdout, /100 %/);

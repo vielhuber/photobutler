@@ -35,21 +35,28 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         fs.copyFileSync(fixtures + '/sample-a.jpg', root + '/photos/a-copy.jpg');
         fs.appendFileSync(root + '/photos/a-copy.jpg', 'distinct photo with identical decoded pixels');
         fs.copyFileSync(fixtures + '/sample-b.jpg', root + '/photos/b.jpg');
-        fs.copyFileSync(project + '/tests/fixtures/animated-sticker.webp', root + '/photos/sticker.webp');
-        let originals = Object.fromEntries(
-            fs.readdirSync(root + '/photos').map(name => [name, fs.readFileSync(root + '/photos/' + name)])
-        );
+        execFileSync('php', [
+            '-r',
+            'imagewebp(imagecreatetruecolor(32, 32), $argv[1]);',
+            root + '/photos/sticker.webp'
+        ]);
         fs.writeFileSync(
             root + '/.data/.env',
-            `PHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\nAUTH_USERNAME=face-test\nAUTH_PASSWORD=isolated-face-test\nJWT_SECRET=isolated-local-face-test-signing-key-123456\n`
+            `AUTH_USERNAME=face-test\nAUTH_PASSWORD=isolated-face-test\nJWT_SECRET=isolated-local-face-test-signing-key-123456\n`
         );
         fs.writeFileSync(
             root + '/public/index.php',
             `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();`
         );
-        database(
-            `$library->index(); $library->database->exec("UPDATE photos SET status='done', ai_tags='[\\\"Test\\\"]', priority=1");`
-        );
+        // the fixture client imports the folder and downloads its previews without Graph access
+        let seed = () =>
+            execFileSync('php', [
+                project + '/tests/fixtures/seed-cloud.php',
+                root,
+                JSON.stringify({ directory: root + '/photos', thumbnails: true })
+            ]);
+        seed();
+        database(`$library->database->exec("UPDATE photos SET status='done', ai_tags='[\\\"Test\\\"]', priority=1");`);
         let socket = net.createServer();
         socket.listen(0, '127.0.0.1');
         await once(socket, 'listening');
@@ -111,9 +118,13 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             await page.getByRole('link', { name: 'Jobs', exact: true }).click();
             await page.waitForSelector('[data-job="faces"]');
         }
+        let faces = (...limits) =>
+            execFileSync('php', [project + '/bin/photobutler-index', '--root=' + root, '--faces-only', ...limits], {
+                encoding: 'utf8'
+            });
         async function runFaces() {
+            faces();
             await openJobs();
-            await page.locator('[data-job="faces"] [data-job-action="start"]').click();
             await page.waitForFunction(() =>
                 document.querySelector('[data-job="faces"] [data-job-status]').textContent.includes('Abgeschlossen')
             );
@@ -122,14 +133,8 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             Number(database('echo $library->database->query("SELECT COUNT(*) FROM face_state")->fetchColumn();')),
             0
         );
+        faces('--limit=1');
         await openJobs();
-        await page.evaluate(() => {
-            document.querySelector('[data-job="faces"] [data-job-action="start"]').click();
-            document.querySelector('[data-job="faces"] [data-job-action="pause"]').click();
-        });
-        await page.waitForFunction(
-            () => !document.querySelector('[data-job="faces"] [data-job-action="start"]').disabled
-        );
         assert.match(await page.locator('[data-job="faces"] [data-job-status]').textContent(), /Pausiert/);
         await runFaces();
         await page.getByRole('link', { name: /Personen/ }).click();
@@ -213,11 +218,6 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             let image = document.querySelector('#viewer-persons img');
             return image?.complete && image.naturalWidth === 112;
         });
-        let original = await context.request.get(url + `?photo=${photoId}&size=original&download=1`);
-        let originalName = database(
-            `echo $library->database->query('SELECT name FROM photos WHERE id = ${Number(photoId)}')->fetchColumn();`
-        );
-        assert.deepEqual(await original.body(), originals[originalName]);
         assert.equal(
             (
                 await context.request.post(url, {
@@ -300,8 +300,6 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         await page.reload();
         await page.waitForSelector('[data-job="tag"]');
         assert.equal(await resetButton.count(), 0);
-        assert.equal(await page.locator('[data-job="tag"] [data-job-action="start"]').isEnabled(), true);
-        assert.equal(await page.locator('[data-job="faces"] [data-job-action="pause"]').isEnabled(), false);
         assert.equal(Number(database('echo count($library->faces->persons());')), originalGroups);
         database(`$library->resetAnalysis();
             $first = imagecreatefromjpeg(${JSON.stringify(root + '/photos/a.jpg')});
@@ -312,8 +310,9 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             imagecopy($collage, $first, 0, 0, 0, 0, $width, $height);
             imagecopy($collage, $first, $width, 0, 0, 0, $width, $height);
             imagecopyresampled($collage, $other, $width * 2, 0, 0, 0, $otherWidth, $height, imagesx($other), imagesy($other));
-            imagejpeg($collage, ${JSON.stringify(root + '/photos/album-page.jpg')}, 95);
-            $library->index(); $library->database->exec("UPDATE photos SET status='done', priority=1");`);
+            imagejpeg($collage, ${JSON.stringify(root + '/photos/album-page.jpg')}, 95);`);
+        seed();
+        database(`$library->database->exec("UPDATE photos SET status='done', priority=1");`);
         await runFaces();
         await page.getByRole('link', { name: /Personen/ }).click();
         await page.waitForFunction(() => document.querySelectorAll('.person-grid > a').length === 2);
@@ -349,7 +348,7 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
                 fs.copyFileSync(root + '/' + name, process.env.PHOTOBUTLER_BROWSER_ARTIFACTS + '/' + name);
         }
         console.log(
-            'PASS: scanned album-page repeated portraits grouped automatically with real CPU inference, distinct person filtering, combined reset absent on desktop/mobile/reload, retained reset endpoint CSRF/auth, real local CPU inference, existing-fragment CLI regroup and idempotence, backfill without AI calls, stop/resume during person navigation, rename/split/explicit same-name merge/ignore, filters, detail crops, original download, CSRF/auth, history, saved layout, desktop/mobile. URL: ' +
+            'PASS: scanned album-page repeated portraits grouped automatically with real CPU inference, distinct person filtering, combined reset absent on desktop/mobile/reload, retained reset endpoint CSRF/auth, real local CPU inference, existing-fragment CLI regroup and idempotence, backfill without AI calls, stop/resume during person navigation, rename/split/explicit same-name merge/ignore, filters, detail crops, CSRF/auth, history, saved layout, desktop/mobile. URL: ' +
                 url
         );
     } finally {

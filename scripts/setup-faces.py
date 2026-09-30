@@ -5,7 +5,6 @@ from pathlib import Path
 import subprocess
 import sys
 import urllib.request
-import venv
 
 if sys.version_info[:2] != (3, 12):
     raise RuntimeError('This pinned runtime requires Python 3.12 on Linux x86_64')
@@ -15,10 +14,10 @@ scripts = Path(__file__).resolve().parent
 data = Path(sys.argv[1] if len(sys.argv) > 1 else scripts.parent / '.data').resolve()
 runtime = data / 'face-runtime'
 manifest = json.loads((scripts / 'face-models.json').read_text())
-venv.create(runtime, with_pip=True)
-subprocess.run([str(runtime / 'bin/python'), '-m', 'pip', 'install', '--require-hashes', '-r', str(scripts / 'face-requirements.txt')], check=True)
+# shared hosts often ship pip without ensurepip/venv, so packages go into a private target directory
+subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', '--upgrade', '--require-hashes', '--target', str(runtime / 'packages'), '-r', str(scripts / 'face-requirements.txt')], check=True)
 models = runtime / 'models'
-models.mkdir(exist_ok=True)
+models.mkdir(parents=True, exist_ok=True)
 for model in manifest['models']:
     path = models / model['file']
     if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != model['sha256']:

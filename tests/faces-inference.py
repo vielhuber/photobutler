@@ -27,7 +27,7 @@ class FaceInferenceTest(unittest.TestCase):
 
     def analyze(self, path):
         before = hashlib.sha256(path.read_bytes()).hexdigest()
-        completed = subprocess.run([str(self.runtime / 'bin/python'), str(self.project / 'scripts/analyze-faces.py'), str(path), str(self.runtime / 'models')], capture_output=True, check=True, timeout=60)
+        completed = subprocess.run(['python3.12', str(self.project / 'scripts/analyze-faces.py'), str(path), str(self.runtime / 'models')], capture_output=True, check=True, timeout=60, env={**os.environ, 'PYTHONPATH': str(self.runtime / 'packages'), 'PYTHONNOUSERSITE': '1'})
         self.assertEqual(before, hashlib.sha256(path.read_bytes()).hexdigest())
         return json.loads(completed.stdout)
 

@@ -31,8 +31,13 @@ let { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
             for (let directory of ['.data', 'public', 'photos']) fs.mkdirSync(root + '/' + directory);
             fs.writeFileSync(
                 root + '/.data/.env',
-                `AUTH_USERNAME=${credentials.username}\nAUTH_PASSWORD=${credentials.password}\nJWT_SECRET=isolated-menu-test-signing-secret\nPHOTO_PATHS='${JSON.stringify([root + '/photos'])}'\n`
+                `AUTH_USERNAME=${credentials.username}\nAUTH_PASSWORD=${credentials.password}\nJWT_SECRET=isolated-menu-test-signing-secret\n`
             );
+            execFileSync('php', [
+                project + '/tests/fixtures/seed-cloud.php',
+                root,
+                JSON.stringify({ directory: root + '/photos' })
+            ]);
             fs.writeFileSync(
                 root + '/public/index.php',
                 `<?php declare(strict_types=1); require ${JSON.stringify(project + '/vendor/autoload.php')}; (new \\vielhuber\\photobutler\\PhotoButler(dirname(__DIR__)))->run();`
