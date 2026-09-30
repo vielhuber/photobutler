@@ -71,7 +71,7 @@ signing in sets a host-only, HttpOnly, SameSite=Strict cookie for a fixed 365 da
 
 existing sessions are not silently extended: sign out and sign in once after this update to start the year. ordinary visits do not renew the deadline. logout revokes this browser's token server-side and deletes its cookies; changing AUTH_USERNAME, AUTH_PASSWORD or JWT_SECRET invalidates all logins. deleting cookies, private browsing, browser retention policies or loss of the token database may require an earlier sign-in. a stolen persistent cookie grants access until expiry or revocation, so use HTTPS and only stay signed in on trusted devices.
 
-authentication checks use `composer test -- --filter AuthenticationTest` and `PLAYWRIGHT_MODULE=/path/to/playwright node tests/auth-browser.cjs`. the browser check uses isolated empty data and a disposable persistent profile. explicitly setting `PHOTOBUTLER_AUTH_LIVE=1` instead checks the configured HTTPS site using local credentials, without starting jobs or opening photos. it signs out its own test login and verifies revocation; it never deletes live server sessions.
+authentication checks use `composer test -- --filter AuthenticationTest`.
 
 ## usage
 
@@ -187,15 +187,13 @@ The Jobs page offers separate confirmed resets for import, thumbnails, AI tags a
 ```bash
 composer lint
 PHOTOBUTLER_TEST_FACE_RUNTIME="$PWD/.data/face-runtime" composer test
-npm test
 npm run format:check
 # approved public/local test images, never a private production collection:
 PHOTOBUTLER_FACE_FIXTURES=/path/to/approved-samples PYTHONPATH=.data/face-runtime/packages python3.12 tests/faces-inference.py
-PHOTOBUTLER_FACE_FIXTURES=/path/to/approved-samples PLAYWRIGHT_MODULE=/path/to/playwright node tests/faces-browser.cjs
 ```
 
-provide `sample-a.jpg` and `sample-b.jpg`, each with one different person, for the optional inference/browser checks. the inference check also uses a brightness variant, EXIF rotation, two-person composition and blank/unsupported inputs. the browser check creates and removes an isolated local database, uses the actual CPU runtime and real image requests, and makes no AI-provider calls. node.js and Playwright are test-only tools, not production dependencies. without `PHOTOBUTLER_TEST_FACE_RUNTIME`, the real-CPU PHPUnit test is explicitly skipped; the deterministic grouping/state tests still run.
+provide `sample-a.jpg` and `sample-b.jpg`, each with one different person, for the optional inference check. it also uses a brightness variant, EXIF rotation, two-person composition and blank/unsupported inputs. all tests are php (phpunit) except this optional python inference check; `npm run format:check` (prettier) is the only node.js tool left and is not needed on the server. without `PHOTOBUTLER_TEST_FACE_RUNTIME`, the real-CPU PHPUnit test is explicitly skipped; the deterministic grouping/state tests still run.
 
 validation on 2026-09-09 used the public [OpenCV face sample](https://github.com/opencv/opencv/blob/master/samples/data/lena.jpg) and [second OpenCV sample](https://github.com/opencv/opencv/blob/master/samples/data/messi5.jpg), without adding them to the repository. the brightness variant scored 0.9803 against its source; the different sample scored 0.1303. two individual process measurements took 0.46–0.56 seconds with about 159 MiB peak RSS each; on the all-inkl host a single detection took 0.43 seconds; these are point measurements, not collection-wide performance or accuracy guarantees.
 
-job checks cover CLI execution, lock-protected status, rejected browser controls and independent resets. `tests/jobs-browser.cjs` checks CLI jobs with real CPU face inference; `tests/job-logs-browser.cjs` checks the log-free status page, blocked CLI workers, duplicate/reset rejection, SIGTERM/resume and cache reuse without requiring the face runtime. both browser suites use isolated temporary photos/databases and real HTTP requests, with no external AI calls or mocked processing. provide `PHOTOBUTLER_BROWSER_ARTIFACTS` to retain desktop/mobile screenshots. successful paid-provider inference is deliberately outside this fixture test; an unconfigured provider exercises the independent error/retry path.
+job checks cover CLI execution, lock-protected status, rejected browser controls, independent resets, the cron url and OneDrive transfers against a local php https fixture server (batches, parallel downloads, retries, signals), with no external AI or Graph calls.

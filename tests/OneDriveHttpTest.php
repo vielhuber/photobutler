@@ -11,58 +11,45 @@ final class OneDriveHttpTest extends TestCase
         mkdir($root, 0700);
         $upstream = $server = null;
         try {
-            $certificate = proc_open(
-                [
-                    'openssl',
-                    'req',
-                    '-x509',
-                    '-newkey',
-                    'rsa:2048',
-                    '-nodes',
-                    '-keyout',
-                    $root . '/key.pem',
-                    '-out',
-                    $root . '/certificate.pem',
-                    '-days',
-                    '1',
-                    '-subj',
-                    '/CN=localhost',
-                    '-addext',
-                    'subjectAltName=IP:127.0.0.1'
-                ],
-                [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
-                $pipes
-            );
-            $this->assertSame(0, proc_close($certificate));
             file_put_contents(
-                $root . '/upstream.cjs',
-                <<<'JS'
-                let https = require('node:https');
-                let fs = require('node:fs');
-                let directory = process.argv[2];
-                let server = https.createServer({key:fs.readFileSync(directory+'/key.pem'),cert:fs.readFileSync(directory+'/certificate.pem')},(request,response)=>{
-                    fs.appendFileSync(directory+'/requests',JSON.stringify({url:request.url,authorization:request.headers.authorization,range:request.headers.range,method:request.method,port:request.socket.remotePort})+'\n');
-                    if(request.url.startsWith('/metadata')) {
-                        response.setHeader('Content-Type','application/json');
-                        let metadata = {id:'photo',size:10,eTag:'v1',file:{mimeType:'image/jpeg'},'@microsoft.graph.downloadUrl':`https://127.0.0.1:${server.address().port}/content`};
-                        if(new URL(request.url,'https://localhost').searchParams.has('$select')) { delete metadata['@microsoft.graph.downloadUrl']; }
-                        response.end(JSON.stringify(metadata));
-                        return;
-                    }
-                    let body = Buffer.from('0123456789');
-                    if(request.headers.range) {
-                        if(request.headers.range === 'bytes=20-30') { response.writeHead(416,{'Content-Range':'bytes */10'}); response.end('upstream error body'); return; }
-                        response.writeHead(206,{'Content-Range':'bytes 2-5/10','Content-Length':4,'Accept-Ranges':'bytes'});
-                        response.end(body.subarray(2,6)); return;
-                    }
-                    response.writeHead(200,{'Content-Length':10,'Accept-Ranges':'bytes'});
-                    response.end(body);
-                });
-                server.listen(0,'127.0.0.1',()=>fs.writeFileSync(directory+'/port',String(server.address().port)));
-                JS
+                $root . '/upstream.php',
+                '<?php declare(strict_types=1); require ' .
+                    var_export(__DIR__ . '/fixtures/FixtureHttpsServer.php', true) .
+                    ';' .
+                    <<<'PHP'
+                    $directory = $argv[1];
+                    $server = new FixtureHttpsServer($directory, false, 'localhost', ['IP:127.0.0.1']);
+                    $server->run(static function (array $request) use ($directory, $server): array {
+                        $entry = ['url' => $request['url']];
+                        foreach (['authorization', 'range'] as $header) {
+                            if (isset($request['headers'][$header])) {
+                                $entry[$header] = $request['headers'][$header];
+                            }
+                        }
+                        $entry['method'] = $request['method'];
+                        $entry['port'] = $request['port'];
+                        file_put_contents($directory . '/requests', json_encode($entry) . "\n", FILE_APPEND);
+                        if (str_starts_with($request['url'], '/metadata')) {
+                            parse_str((string) parse_url($request['url'], PHP_URL_QUERY), $query);
+                            $metadata = ['id' => 'photo', 'size' => 10, 'eTag' => 'v1', 'file' => ['mimeType' => 'image/jpeg']];
+                            if (!isset($query['$select'])) {
+                                $metadata['@microsoft.graph.downloadUrl'] = 'https://127.0.0.1:' . $server->port . '/content';
+                            }
+                            return ['headers' => ['Content-Type: application/json'], 'body' => json_encode($metadata)];
+                        }
+                        $range = $request['headers']['range'] ?? '';
+                        if ($range === 'bytes=20-30') {
+                            return ['status' => 416, 'headers' => ['Content-Range: bytes */10'], 'body' => 'upstream error body'];
+                        }
+                        if ($range !== '') {
+                            return ['status' => 206, 'headers' => ['Content-Range: bytes 2-5/10', 'Accept-Ranges: bytes'], 'body' => '2345'];
+                        }
+                        return ['headers' => ['Accept-Ranges: bytes'], 'body' => '0123456789'];
+                    });
+                    PHP
             );
             $upstream = proc_open(
-                ['node', $root . '/upstream.cjs', $root],
+                [PHP_BINARY, $root . '/upstream.php', $root],
                 [
                     0 => ['file', '/dev/null', 'r'],
                     1 => ['file', '/dev/null', 'w'],

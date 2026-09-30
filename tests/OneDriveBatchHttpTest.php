@@ -50,29 +50,6 @@ final class OneDriveBatchHttpTest extends TestCase
                 ->execute([$id, (string) $id, $id . '.jpg']);
         }
         imagejpeg(imagecreatetruecolor(16, 12), $this->root . '/preview');
-        $certificate = proc_open(
-            [
-                'openssl',
-                'req',
-                '-x509',
-                '-newkey',
-                'rsa:2048',
-                '-nodes',
-                '-keyout',
-                $this->root . '/key.pem',
-                '-out',
-                $this->root . '/certificate.pem',
-                '-days',
-                '1',
-                '-subj',
-                '/CN=graph.microsoft.com',
-                '-addext',
-                'subjectAltName=DNS:graph.microsoft.com,IP:127.0.0.1'
-            ],
-            [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
-            $pipes
-        );
-        $this->assertSame(0, proc_close($certificate));
     }
 
     protected function tearDown(): void
@@ -105,7 +82,7 @@ final class OneDriveBatchHttpTest extends TestCase
         if (!is_resource($this->proxy)) {
             file_put_contents($this->root . '/configuration', json_encode(['mode' => $mode]));
             $this->proxy = proc_open(
-                ['node', __DIR__ . '/fixtures/onedrive-batch-proxy.cjs', $this->root],
+                [PHP_BINARY, __DIR__ . '/fixtures/onedrive-batch-proxy.php', $this->root],
                 [
                     0 => ['file', '/dev/null', 'r'],
                     1 => ['file', '/dev/null', 'w'],

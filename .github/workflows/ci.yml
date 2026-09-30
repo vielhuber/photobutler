@@ -26,6 +26,4 @@ jobs:
                   node-version-file: .nvmrc
             - run: npm install --ignore-scripts
             - run: composer test
-            - run: npm test
             - run: npm run format:check
-            - run: node --check assets/app.js && node --check assets/login.js

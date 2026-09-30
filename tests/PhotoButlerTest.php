@@ -1485,7 +1485,7 @@ final class PhotoButlerTest extends TestCase
         $address = stream_socket_get_name($socket, false);
         fclose($socket);
         $process = proc_open(
-            [PHP_BINARY, '-S', $address, '-t', $this->root . '/public'],
+            [PHP_BINARY, '-d', 'session.save_path=' . $this->root, '-S', $address, '-t', $this->root . '/public'],
             [
                 0 => ['pipe', 'r'],
                 1 => ['file', $this->root . '/server.log', 'a'],
