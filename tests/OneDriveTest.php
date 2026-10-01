@@ -372,6 +372,52 @@ final class OneDriveTest extends TestCase
         }
     }
 
+    public function testUnavailablePreviewsCompleteFaceAnalysisWithoutErrors(): void
+    {
+        $this->client->missingThumbnails = ['b'];
+        $this->index([$this->item('a'), $this->item('b', 'video.mov')]);
+        $this->library->oneDrive->previews([1, 2]);
+        $state = $this->library->jobs->start('faces');
+        while ($state['status'] === 'running') {
+            $state = $this->library->jobs->step('faces', $state['token']);
+        }
+        $this->assertSame(1, $state['errors']);
+        $this->assertSame(1, $state['completed']);
+        $this->assertSame(
+            ['1' => 'error', '2' => 'unsupported'],
+            $this->library->database
+                ->query('SELECT photo_id, status FROM face_state ORDER BY photo_id')
+                ->fetchAll(PDO::FETCH_KEY_PAIR)
+        );
+        $this->assertSame(['a', 'b'], $this->client->downloads);
+    }
+
+    public function testFaceAnalysisSkipsHiddenPhotosUntilTheyAreShownAgain(): void
+    {
+        $this->client->missingThumbnails = ['a', 'b'];
+        $this->index([$this->item('a'), $this->item('b', 'hidden.jpg')]);
+        $this->library->oneDrive->previews([1, 2]);
+        $this->library->priority(2, -1);
+        $this->assertSame(1, $this->library->jobs->all()['faces']['total']);
+        $state = $this->library->jobs->start('faces');
+        while ($state['status'] === 'running') {
+            $state = $this->library->jobs->step('faces', $state['token']);
+        }
+        $this->assertSame('done', $state['status']);
+        $this->assertSame(100, $state['percent']);
+        $this->assertSame(
+            [1],
+            array_map(
+                'intval',
+                $this->library->database->query('SELECT photo_id FROM face_state')->fetchAll(PDO::FETCH_COLUMN)
+            )
+        );
+        $this->library->priority(2, 0);
+        $state = $this->library->jobs->all()['faces'];
+        $this->assertSame(2, $state['total']);
+        $this->assertSame(1, $state['queued']);
+    }
+
     public function testFastCachePassDownloadsOnlyGapsAndCompletesInOneStep(): void
     {
         $this->index(array_map(fn(int $id): array => $this->item('item-' . $id), range(1, 250)));

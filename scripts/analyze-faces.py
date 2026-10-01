@@ -29,7 +29,7 @@ try:
     height, width = image.shape[:2]
     scale = min(1.0, 1600 / max(height, width))
     working = cv2.resize(image, (round(width * scale), round(height * scale))) if scale < 1 else image
-    detector = cv2.FaceDetectorYN.create(str(models / manifest['models'][0]['file']), '', (working.shape[1], working.shape[0]), 0.9, 0.3, 5000)
+    detector = cv2.FaceDetectorYN.create(str(models / manifest['models'][0]['file']), '', (working.shape[1], working.shape[0]), 0.8, 0.3, 5000)
     recognizer = cv2.FaceRecognizerSF.create(str(models / manifest['models'][1]['file']), '')
     detected = detector.detect(working)[1]
     faces = []

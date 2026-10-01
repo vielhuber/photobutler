@@ -132,7 +132,10 @@ final class JobRunner
                 $job === 'tag'
                     ? "p.status = 'done'"
                     : "s.status = 'excluded' OR
-                (s.status IN ('done', 'unsupported') AND s.modified = p.modified AND s.bytes = p.bytes AND s.model = :model)";
+                (s.status IN ('done', 'unsupported') AND s.modified = p.modified AND s.bytes = p.bytes AND s.model = :model
+                AND s.detection >= " .
+                        FaceStore::DETECTION .
+                        ')';
             $due =
                 $job === 'tag'
                     ? "p.status = 'pending' OR (p.status = 'error' AND p.attempted < :retry)"
@@ -141,10 +144,13 @@ final class JobRunner
                 $job === 'tag'
                     ? "p.status = 'error'"
                     : "s.status = 'error' AND s.modified = p.modified AND s.bytes = p.bytes AND s.model = :model";
-            $statement = $this->library->database->prepare("SELECT COUNT(*) AS total,
+            $statement = $this->library->database->prepare(
+                "SELECT COUNT(*) AS total,
                 COALESCE(SUM($done), 0) AS completed, COALESCE(SUM($error), 0) AS errors,
                 COALESCE(SUM($due), 0) AS queued
-                FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1");
+                FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1" .
+                    ($job === 'faces' ? ' AND p.priority <> -1' : '')
+            );
             $parameters = [':retry' => time() - 3600];
             if ($job === 'faces') {
                 $parameters[':model'] = FaceStore::MODEL;
@@ -394,8 +400,7 @@ final class JobRunner
                     DELETE FROM face_state WHERE status <> 'excluded';
                     DELETE FROM persons WHERE name = '' AND auto_match = 1
                         AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = persons.id)
-                        AND NOT EXISTS (SELECT 1 FROM person_separations WHERE person_a = persons.id OR person_b = persons.id);
-                    UPDATE persons SET title_face = NULL WHERE title_face NOT IN (SELECT id FROM faces);");
+                        AND NOT EXISTS (SELECT 1 FROM person_separations WHERE person_a = persons.id OR person_b = persons.id);");
             }
             $database
                 ->prepare(

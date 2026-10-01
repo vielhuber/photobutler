@@ -111,6 +111,7 @@ export function initializeGallery(navigatePage) {
     let $tags = document.querySelector('#viewer-tags');
     let $message = document.querySelector('#viewer-message');
     let $persons = document.querySelector('#viewer-persons');
+    let $faces = document.querySelector('#viewer-faces');
     let $download = document.querySelector('#viewer-download');
     let $previous = document.querySelector('.viewer-previous');
     let $next = document.querySelector('.viewer-next');
@@ -223,6 +224,7 @@ export function initializeGallery(navigatePage) {
         $date.textContent = '';
         $tags.value = '';
         $persons.replaceChildren();
+        $faces.replaceChildren();
         $favorite.disabled = true;
         $download.removeAttribute('href');
         $previous.disabled = currentIndex <= 0;
@@ -253,19 +255,7 @@ export function initializeGallery(navigatePage) {
             let photo = await response.json();
             if (request !== requestNumber) return;
             currentPhoto = photo;
-            for (let person of photo.persons || []) {
-                let $link = document.createElement('a');
-                $link.className = 'chip';
-                let personUrl = new URL(location.href);
-                personUrl.searchParams.set('person', person.id);
-                for (let key of ['image', 'page']) personUrl.searchParams.delete(key);
-                $link.href = personUrl.href;
-                let $crop = document.createElement('img');
-                $crop.src = `?face=${person.cover}`;
-                $crop.alt = '';
-                $link.append($crop, document.createTextNode(person.name || `Person ${person.id}`));
-                $persons.append($link);
-            }
+            renderFaces(photo);
             $title.textContent = photo.name;
             $date.textContent = `${photo.taken.slice(0, 10)} · ${photo.album} · ${photo.width} × ${photo.height}`;
             $description.textContent = photo.description;
@@ -287,6 +277,82 @@ export function initializeGallery(navigatePage) {
                 $message.textContent = error.message;
             }
         }
+    }
+
+    function renderFaces(photo) {
+        if (!photo.faces?.length) {
+            let $note = document.createElement('p');
+            $note.className = 'muted';
+            $note.textContent =
+                {
+                    done: 'Keine Gesichter erkannt.',
+                    pending: 'Gesichtserkennung steht noch aus.',
+                    error: 'Gesichtserkennung fehlgeschlagen.',
+                    unsupported: 'Gesichtserkennung für dieses Foto nicht möglich.',
+                    excluded: 'Gesichtsdaten gelöscht.'
+                }[photo.face_status] || '';
+            $persons.append($note);
+        }
+        for (let face of photo.faces || []) {
+            let $entry = document.createElement(face.person === null ? 'span' : 'a');
+            $entry.className = 'chip';
+            $entry.dataset.face = face.id;
+            if (face.person !== null) {
+                let personUrl = new URL(location.href);
+                personUrl.searchParams.set('person', face.person);
+                for (let key of ['image', 'page', 'offset']) personUrl.searchParams.delete(key);
+                $entry.href = personUrl.href;
+            }
+            let $crop = document.createElement('img');
+            $crop.src = `?face=${face.id}`;
+            $crop.alt = '';
+            $entry.append(
+                $crop,
+                document.createTextNode(
+                    face.person === null ? 'Nicht zugeordnet' : face.name || `Person ${face.person}`
+                )
+            );
+            let $box = document.createElement('span');
+            $box.className = face.person === null ? 'viewer-face unassigned' : 'viewer-face';
+            $box.dataset.face = face.id;
+            $box.title = $entry.textContent;
+            $persons.append($entry);
+            $faces.append($box);
+        }
+        positionFaces();
+    }
+
+    // the image is letterboxed by object-fit: contain, so boxes follow its rendered area, not the element
+    function positionFaces() {
+        if (!currentPhoto?.faces?.length || !$image.naturalWidth) return;
+        let scale = Math.min($image.clientWidth / $image.naturalWidth, $image.clientHeight / $image.naturalHeight);
+        let width = $image.naturalWidth * scale;
+        let height = $image.naturalHeight * scale;
+        let left = $image.offsetLeft + ($image.clientWidth - width) / 2;
+        let top = $image.offsetTop + ($image.clientHeight - height) / 2;
+        currentPhoto.faces.forEach((face, index) => {
+            let $box = $faces.children[index];
+            if (!$box) return;
+            $box.style.left = `${left + face.box[0] * width}px`;
+            $box.style.top = `${top + face.box[1] * height}px`;
+            $box.style.width = `${face.box[2] * width}px`;
+            $box.style.height = `${face.box[3] * height}px`;
+        });
+    }
+    $image.addEventListener('load', positionFaces, { signal: lifecycle.signal });
+    window.addEventListener('resize', positionFaces, { signal: lifecycle.signal });
+    for (let type of ['pointerover', 'pointerout']) {
+        $viewer.addEventListener(
+            type,
+            event => {
+                let face = event.target.closest?.('[data-face]')?.dataset.face;
+                if (!face) return;
+                $viewer
+                    .querySelectorAll(`[data-face="${face}"]`)
+                    .forEach($item => $item.classList.toggle('active', type === 'pointerover'));
+            },
+            { signal: lifecycle.signal }
+        );
     }
 
     $viewer.addEventListener('click', async event => {

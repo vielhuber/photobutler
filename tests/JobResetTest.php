@@ -22,7 +22,8 @@ final class JobResetTest extends TestCase
             INSERT INTO person_separations VALUES (1, 3);
             INSERT INTO faces (id, photo_id, person_id, modified, bytes, model, box, embedding, crop, origin)
             SELECT id, id, id, modified, bytes, 'fixture', '[]', '[]', 'crop', CASE WHEN id = 1 THEN 'manual' ELSE 'auto' END FROM photos;
-            INSERT INTO face_state SELECT id, modified, bytes, 'fixture', CASE WHEN id = 1 THEN 'excluded' ELSE 'done' END, 42 FROM photos;
+            INSERT INTO face_state (photo_id, modified, bytes, model, status, attempted)
+            SELECT id, modified, bytes, 'fixture', CASE WHEN id = 1 THEN 'excluded' ELSE 'done' END, 42 FROM photos;
             UPDATE jobs SET status = 'paused', completed = 2, total = 2, cursor = 2, maximum = 2, errors = 1;
             INSERT INTO job_timings SELECT job, 5 FROM jobs;");
     }

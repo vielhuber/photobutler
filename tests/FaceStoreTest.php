@@ -56,7 +56,7 @@ final class FaceStoreTest extends TestCase
         $this->assertSame(FaceStore::MODEL, $manifest['version']);
         new FaceStore($this->library->database);
         $this->assertSame(
-            1,
+            3,
             (int) $this->library->database->query('SELECT COUNT(*) FROM face_migrations')->fetchColumn()
         );
         $this->assertTrue($this->library->faces->save($this->photo(1), $this->analysisResult([[1.0], [0.0, 1.0]])));
@@ -81,6 +81,264 @@ final class FaceStoreTest extends TestCase
         $store->save($this->photo(3), $this->analysisResult([[0.0, 0.0, 1.0]]));
         $this->assertCount(4, $store->persons());
         $this->assertSame([1, 1, 1, 1], array_column($store->persons(), 'total'));
+    }
+
+    public function testTinyFacesAreStoredWithoutCreatingOrJoiningPersons(): void
+    {
+        $store = $this->library->faces;
+        $store->save($this->photo(1), $this->analysisResult([[1.0]]));
+        $tiny = $this->analysisResult([[1.0]]);
+        $tiny->faces[0]->box = [0.1, 0.1, FaceStore::MIN_FACE_WIDTH - 0.001, 0.05];
+        $store->save($this->photo(2), $tiny);
+        $this->assertSame([1], array_column($store->persons(), 'total'));
+        $this->assertSame(
+            [null],
+            $this->library->database
+                ->query('SELECT person_id FROM faces WHERE photo_id = 2')
+                ->fetchAll(PDO::FETCH_COLUMN)
+        );
+        $this->assertSame([], $this->library->photo(2)->persons);
+    }
+
+    public function testExistingDatabasesGainLaterFaceColumnsOnce(): void
+    {
+        $database = $this->library->database;
+        $database->exec('ALTER TABLE persons DROP COLUMN hidden; ALTER TABLE face_state DROP COLUMN detection;
+            DELETE FROM face_migrations WHERE version > 1;');
+        new FaceStore($database);
+        new FaceStore($database);
+        $this->assertSame(
+            [1, 2, 3],
+            array_map(
+                'intval',
+                $database->query('SELECT version FROM face_migrations ORDER BY version')->fetchAll(PDO::FETCH_COLUMN)
+            )
+        );
+        $this->assertContains(
+            'hidden',
+            array_column($database->query('PRAGMA table_info(persons)')->fetchAll(), 'name')
+        );
+        $this->assertContains(
+            'detection',
+            array_column($database->query('PRAGMA table_info(face_state)')->fetchAll(), 'name')
+        );
+    }
+
+    public function testPersonsAreSortedByPhotoCountThenName(): void
+    {
+        $store = $this->library->faces;
+        $store->save($this->photo(1), $this->analysisResult([[1.0], [0.0, 1.0], [0.0, 0.0, 1.0]]));
+        $store->save($this->photo(2), $this->analysisResult([[0.0, 1.0]]));
+        $ids = $this->library->database
+            ->query('SELECT person_id FROM faces WHERE photo_id = 1 ORDER BY id')
+            ->fetchAll(PDO::FETCH_COLUMN);
+        $store->correct('rename', (int) $ids[1], 'Zora');
+        $store->correct('rename', (int) $ids[0], 'Anna');
+        $this->assertSame(
+            [[(int) $ids[1], 2], [(int) $ids[2], 1], [(int) $ids[0], 1]],
+            array_map(
+                static fn(array $person): array => [(int) $person['id'], (int) $person['total']],
+                $store->persons()
+            )
+        );
+    }
+
+    public function testPhotoFacesExposePositionsWithoutIgnoredOrHiddenPersons(): void
+    {
+        $store = $this->library->faces;
+        $result = $this->analysisResult([[1.0], [0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]]);
+        $result->faces[3]->box = [0.9, 0.9, 0.02, 0.02];
+        $store->save($this->photo(1), $result);
+        $ids = array_map(
+            'intval',
+            $this->library->database->query('SELECT id FROM faces ORDER BY id')->fetchAll(PDO::FETCH_COLUMN)
+        );
+        $people = array_map(
+            'intval',
+            $this->library->database
+                ->query('SELECT person_id FROM faces WHERE person_id IS NOT NULL ORDER BY id')
+                ->fetchAll(PDO::FETCH_COLUMN)
+        );
+        $store->correct('rename', $people[0], 'Anna');
+        $store->correct('ignore', $ids[1]);
+        $store->correct('hide', $people[2]);
+        $this->assertSame(
+            [
+                ['id' => $ids[0], 'box' => [0.1, 0.1, 0.2, 0.2], 'person' => $people[0], 'name' => 'Anna'],
+                ['id' => $ids[3], 'box' => [0.9, 0.9, 0.02, 0.02], 'person' => null, 'name' => '']
+            ],
+            $store->photoFaces(1)
+        );
+    }
+
+    public function testNamedPersonsWinClearMatchesButNeverAgainstCloserHiddenFaces(): void
+    {
+        $store = $this->library->faces;
+        $database = $this->library->database;
+        $insert = $database->prepare("INSERT INTO photos (id, root, path, album, name, modified, bytes, width, height, taken, seen)
+            VALUES (?, '/photos', ?, 'Album', 'photo.jpg', 1, 1, 0, 0, '2026-01-01 12:00:00', 'test')");
+        foreach (range(30, 36) as $id) {
+            $insert->execute([$id, '/photos/' . $id . '.jpg']);
+        }
+        $person = fn(int $photo): ?int => ($id = $database
+            ->query('SELECT person_id FROM faces WHERE photo_id = ' . $photo)
+            ->fetchColumn()) === null
+            ? null
+            : (int) $id;
+        $store->save($this->photo(30), $this->analysisResult([[1.0]]));
+        $anna = $person(30);
+        $store->correct('rename', $anna, 'Anna');
+        $database->exec("UPDATE persons SET auto_match = 0 WHERE id = $anna");
+        $store->save($this->photo(31), $this->analysisResult([[0.9, sqrt(0.19)]]));
+        $this->assertSame($anna, $person(31));
+        $store->save($this->photo(32), $this->analysisResult([[0.0, 1.0]]));
+        $stranger = $person(32);
+        $store->correct('hide', $stranger);
+        $store->save($this->photo(33), $this->analysisResult([[0.3, 0.9, sqrt(0.1)]]));
+        $this->assertSame($stranger, $person(33));
+        $store->save($this->photo(34), $this->analysisResult([[0.42, 0.0, 0.0, sqrt(1 - 0.42 ** 2)]]));
+        $this->assertNotContains($person(34), [$anna, $stranger]);
+        $database->exec("INSERT INTO persons (name) VALUES ('')");
+        $fragment = (int) $database->lastInsertId();
+        $database
+            ->prepare(
+                "INSERT INTO faces (photo_id, person_id, modified, bytes, model, box, embedding, crop) VALUES (35, ?, 1, 1, ?, '[0.1,0.1,0.2,0.2]', ?, '')"
+            )
+            ->execute([$fragment, FaceStore::MODEL, json_encode(array_pad([0.8, 0.0, 0.0, 0.0, 0.6], 128, 0.0))]);
+        $store->save($this->photo(36), $this->analysisResult([[0.85, 0.0, 0.0, 0.0, sqrt(1 - 0.85 ** 2)]]));
+        $this->assertSame($anna, $person(36));
+    }
+
+    public function testNewDetectionPassOnlyAddsFacesAndKeepsEveryExistingAssignment(): void
+    {
+        $store = $this->library->faces;
+        $database = $this->library->database;
+        $vectors = [[1.0], [0.0, 1.0], [0.0, 0.0, 1.0]];
+        $store->save($this->photo(1), $this->analysisResult($vectors));
+        $ids = array_map('intval', $database->query('SELECT id FROM faces ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+        $people = fn(): array => $database
+            ->query('SELECT person_id FROM faces ORDER BY id')
+            ->fetchAll(PDO::FETCH_COLUMN);
+        $store->correct('rename', (int) $people()[0], 'Anna');
+        $store->correct('ignore', $ids[1]);
+        $store->correct('hide', (int) $people()[2]);
+        $current = $this->library->jobs->all()['faces'];
+        $database->exec('UPDATE face_state SET detection = 1');
+        $before = $database->query('SELECT * FROM faces ORDER BY id')->fetchAll();
+        $this->assertSame($current['queued'] + 1, $this->library->jobs->all()['faces']['queued']);
+        $this->assertSame($current['completed'] - 1, $this->library->jobs->all()['faces']['completed']);
+        $this->assertTrue($store->save($this->photo(1), $this->analysisResult([...$vectors, [0.0, 0.0, 0.0, 1.0]])));
+        $after = $database->query('SELECT * FROM faces ORDER BY id')->fetchAll();
+        $this->assertSame($before, array_slice($after, 0, 3));
+        $this->assertCount(4, $after);
+        $this->assertEqualsWithDelta([1.0, 0.1, 0.2, 0.2], json_decode($after[3]['box'], true), 1e-9);
+        $this->assertSame(
+            FaceStore::DETECTION,
+            (int) $database->query('SELECT detection FROM face_state')->fetchColumn()
+        );
+        $this->assertSame($current['queued'], $this->library->jobs->all()['faces']['queued']);
+        $this->assertSame($current['completed'], $this->library->jobs->all()['faces']['completed']);
+        $this->assertFalse($store->save($this->photo(1), $this->analysisResult([...$vectors, [0.0, 0.0, 0.0, 1.0]])));
+        $store->reset(1, false);
+        $this->assertTrue($store->save($this->photo(1), $this->analysisResult([[0.0, 0.0, 0.0, 0.0, 1.0]])));
+        $this->assertSame($after, $database->query('SELECT * FROM faces ORDER BY id')->fetchAll());
+    }
+
+    public function testCoverIsTheNewestClearlyVisibleFace(): void
+    {
+        $store = $this->library->faces;
+        $database = $this->library->database;
+        $insert = $database->prepare("INSERT INTO photos (id, root, path, album, name, modified, bytes, width, height, taken, seen)
+            VALUES (?, '/photos', ?, 'Album', 'photo.jpg', 1, 1, 0, 0, ?, 'test')");
+        foreach ([20 => '2025-01-01', 21 => '2025-06-01', 22 => '2026-01-01', 23 => '2026-01-01'] as $id => $taken) {
+            $insert->execute([$id, '/photos/' . $id . '.jpg', $taken . ' 12:00:00']);
+        }
+        $face = function (int $photo, float $width) use ($store): int {
+            $result = $this->analysisResult([[1.0]]);
+            $result->faces[0]->box = [0.1, 0.1, $width, $width];
+            $store->save($this->photo($photo), $result);
+            return (int) $this->library->database->query('SELECT MAX(id) FROM faces')->fetchColumn();
+        };
+        $old = $face(20, 0.5);
+        $this->assertSame($old, (int) $store->persons()[0]['cover']);
+        $clear = $face(21, 0.2);
+        $this->assertSame($clear, (int) $store->persons()[0]['cover']);
+        $face(22, 0.05);
+        $this->assertSame($clear, (int) $store->persons()[0]['cover']);
+        $larger = $face(23, 0.3);
+        $this->assertSame($larger, (int) $store->persons()[0]['cover']);
+        $database->exec("UPDATE faces SET ignored = 1 WHERE id = $larger");
+        $this->assertSame($clear, (int) $store->persons()[0]['cover']);
+    }
+
+    public function testHiddenPersonsAreNotListedOrShownButKeepCollectingTheirFaces(): void
+    {
+        $store = $this->library->faces;
+        $store->save($this->photo(1), $this->analysisResult([[1.0]]));
+        $person = (int) $this->library->database->query('SELECT person_id FROM faces')->fetchColumn();
+        $store->correct('rename', $person, 'Nachbar');
+        $listed = fn(): array => array_column(
+            array_filter($store->persons(), static fn(array $item): bool => (bool) $item['listed']),
+            'id'
+        );
+        $this->assertSame([$person], $listed());
+        $this->assertSame($person, $store->correct('hide', $person));
+        $this->assertSame([], $listed());
+        $this->assertSame(1, (int) $store->persons()[0]['hidden']);
+        $this->assertSame([], $this->library->photo(1)->persons);
+        $store->save($this->photo(2), $this->analysisResult([[1.0]]));
+        $this->assertSame(
+            [$person],
+            array_map(
+                'intval',
+                array_unique(
+                    $this->library->database->query('SELECT person_id FROM faces')->fetchAll(PDO::FETCH_COLUMN)
+                )
+            )
+        );
+        $store->correct('show', $person);
+        $this->assertSame([$person], $listed());
+        $this->assertSame([$person], array_column($this->library->photo(1)->persons, 'id'));
+    }
+
+    public function testOnlyRepeatedlySeenOrCuratedGroupsAreListed(): void
+    {
+        $store = $this->library->faces;
+        $database = $this->library->database;
+        $insert = $database->prepare("INSERT INTO photos (id, root, path, album, name, modified, bytes, width, height, taken, seen)
+            VALUES (?, '/photos', ?, 'Album', 'photo.jpg', 1, 1, 0, 0, ?, 'test')");
+        foreach ([10 => '2025-01-01', 11 => '2025-01-01', 12 => '2025-01-01', 13 => '2025-02-01'] as $id => $taken) {
+            $insert->execute([$id, '/photos/' . $id . '.jpg', $taken . ' 12:00:00']);
+        }
+        foreach ([10, 11, 12] as $id) {
+            $store->save($this->photo($id), $this->analysisResult([[1.0]]));
+        }
+        $listed = fn(): array => array_column(
+            array_filter($store->persons(), static fn(array $person): bool => (bool) $person['listed']),
+            'total'
+        );
+        $this->assertSame([], $listed());
+        $store->save($this->photo(13), $this->analysisResult([[1.0]]));
+        $this->assertSame([4], $listed());
+        $store->save($this->photo(1), $this->analysisResult([[0.0, 1.0]]));
+        $this->assertSame([4], $listed());
+        $store->correct(
+            'rename',
+            (int) $database->query('SELECT person_id FROM faces WHERE photo_id = 1')->fetchColumn(),
+            'Gast'
+        );
+        $this->assertSame([4, 1], $listed());
+    }
+
+    public function testOpenCvRecommendedThresholdJoinsModerateButNotWeakSimilarity(): void
+    {
+        $store = $this->library->faces;
+        $store->save($this->photo(1), $this->analysisResult([[1.0]]));
+        $store->save($this->photo(2), $this->analysisResult([[0.4, sqrt(1 - 0.4 ** 2)]]));
+        $this->assertCount(1, $store->persons());
+        $store->save($this->photo(3), $this->analysisResult([[0.0, 0.0, 1.0]]));
+        $store->save($this->photo(4), $this->analysisResult([[0.0, 0.0, 0.3, sqrt(1 - 0.3 ** 2)]]));
+        $this->assertSame([2, 1, 1], array_column($store->persons(), 'total'));
     }
 
     public function testPoseVariationUsesTheWholeGroupInsteadOfItsWorstRepresentative(): void
@@ -168,7 +426,7 @@ final class FaceStoreTest extends TestCase
         }
         $query = $this->library->database->prepare('UPDATE faces SET embedding = ? WHERE id = ?');
         $query->execute([json_encode(array_pad([0.8, 0.6], 128, 0.0)), 2]);
-        $query->execute([json_encode(array_pad([0.2, sqrt(0.96)], 128, 0.0)), 3]);
+        $query->execute([json_encode(array_pad([0.0, 1.0], 128, 0.0)), 3]);
         $this->assertSame(1, $store->regroup());
         $this->assertCount(2, $store->persons());
         $store->correct('split', 2);

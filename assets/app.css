@@ -778,6 +778,81 @@ textarea,
     border-radius: 10px;
     object-fit: cover;
 }
+.person-picker {
+    position: relative;
+    min-width: 260px;
+    max-width: 100%;
+}
+.person-picker > summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: white;
+    cursor: pointer;
+}
+.person-picker [data-picker-label] {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.person-picker img {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    object-fit: cover;
+}
+.person-picker-options {
+    position: absolute;
+    z-index: 5;
+    display: grid;
+    gap: 4px;
+    width: max(100%, 320px);
+    max-width: calc(100vw - 32px);
+    max-height: 360px;
+    overflow-y: auto;
+    margin-top: 4px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: white;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+}
+.person-card .person-picker,
+.person-card .person-picker-options {
+    width: 100%;
+    min-width: 0;
+}
+.person-picker-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.person-picker .person-picker-option {
+    flex-wrap: nowrap;
+    margin: 0;
+}
+.person-picker-option span {
+    min-width: 0;
+}
+.person-picker-option img {
+    flex: none;
+}
+.person-picker-option:hover,
+.person-picker-option:has(input:checked) {
+    background: var(--soft);
+}
+.person-picker-option input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
 .person-form {
     display: flex;
     flex-wrap: wrap;
@@ -830,6 +905,33 @@ textarea,
 }
 #viewer.slideshow .viewer-layout {
     display: block;
+}
+.viewer-faces {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+.viewer-face {
+    position: absolute;
+    border: 2px solid rgb(255 255 255 / 85%);
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px rgb(0 0 0 / 45%);
+    pointer-events: auto;
+}
+.viewer-face.unassigned {
+    border-style: dashed;
+    border-color: rgb(255 255 255 / 55%);
+}
+.viewer-face.active {
+    border-color: #f7c948;
+    box-shadow: 0 0 0 2px rgb(0 0 0 / 55%);
+}
+.viewer-persons .chip.active {
+    background: var(--soft);
+    border-color: var(--green);
+}
+#viewer.slideshow .viewer-faces {
+    display: none;
 }
 #viewer.slideshow .viewer-stage {
     height: 100dvh;

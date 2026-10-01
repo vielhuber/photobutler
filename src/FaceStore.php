@@ -6,13 +6,25 @@ namespace vielhuber\photobutler;
 final class FaceStore
 {
     public const MODEL = 'yunet-2023mar-sface-2021dec-opencv-4.13.0-v1';
-    public const MATCH_THRESHOLD = 0.5;
-    public const MATCH_MARGIN = 0.04;
-    public const MATCH_FLOOR = 0.3;
+    // 2: detection threshold lowered to 0.8; older photos get a purely additive second pass
+    public const DETECTION = 2;
+    public const MATCH_THRESHOLD = 0.363;
+    public const MATCH_MARGIN = 0.02;
+    public const MATCH_MEAN = 0.33;
+    public const MIN_FACE_WIDTH = 0.04;
+    public const LISTED_MIN_PHOTOS = 3;
+    public const LISTED_MIN_DAYS = 2;
+    public const COVER_MIN_FACE_WIDTH = 0.1;
+    public const NAMED_THRESHOLD = 0.4;
+    public const NAMED_NEIGHBOURS = 3;
     public const CURRENT_FACE = 'f.active = 1 AND p.available = 1 AND f.modified = p.modified AND f.bytes = p.bytes';
-    public const DUE = "(s.status IS NULL OR (s.status <> 'excluded' AND
+    public const DUE =
+        "p.priority <> -1 AND (s.status IS NULL OR (s.status <> 'excluded' AND
         (s.modified <> p.modified OR s.bytes <> p.bytes OR s.model <> :model OR
-        s.status = 'pending' OR (s.status = 'error' AND s.attempted < :retry))))";
+        s.status = 'pending' OR (s.status = 'error' AND s.attempted < :retry) OR
+        (s.status IN ('done', 'unsupported') AND s.detection < " .
+        self::DETECTION .
+        '))))';
 
     /**
      * Version the biometric schema independently of the existing photo index.
@@ -21,7 +33,10 @@ final class FaceStore
     {
         $database->exec('PRAGMA secure_delete = ON');
         $database->exec('CREATE TABLE IF NOT EXISTS face_migrations (version INTEGER PRIMARY KEY)');
-        if ((int) $database->query('SELECT COALESCE(MAX(version), 0) FROM face_migrations')->fetchColumn() >= 1) {
+        $version = fn(): int => (int) $database
+            ->query('SELECT COALESCE(MAX(version), 0) FROM face_migrations')
+            ->fetchColumn();
+        if ($version() >= 3) {
             return;
         }
         $database->exec('BEGIN IMMEDIATE');
@@ -42,6 +57,14 @@ final class FaceStore
                 CREATE TABLE IF NOT EXISTS person_separations (person_a INTEGER NOT NULL, person_b INTEGER NOT NULL,
                 PRIMARY KEY(person_a, person_b));
                 INSERT OR IGNORE INTO face_migrations VALUES (1);");
+            if ($version() < 2) {
+                $database->exec('ALTER TABLE persons ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+                    INSERT INTO face_migrations VALUES (2);');
+            }
+            if ($version() < 3) {
+                $database->exec('ALTER TABLE face_state ADD COLUMN detection INTEGER NOT NULL DEFAULT 1;
+                    INSERT INTO face_migrations VALUES (3);');
+            }
             $database->commit();
         } finally {
             if ($database->inTransaction()) {
@@ -51,18 +74,28 @@ final class FaceStore
     }
 
     /**
-     * Count only current available photos, retaining manually named and archived groups.
+     * Count only current available photos; rarely seen unnamed groups (mostly strangers in the background) are not listed.
+     * The cover is the newest clearly visible face, so it follows how the person looks today.
      */
     public function persons(): array
     {
         return $this->database
             ->query(
-                'SELECT persons.id, persons.name, COUNT(DISTINCT p.id) AS total,
-            COALESCE(MAX(CASE WHEN f.id = persons.title_face AND p.id IS NOT NULL THEN f.id END),
-            MIN(CASE WHEN p.id IS NOT NULL THEN f.id END)) AS cover
+                'SELECT persons.id, persons.name, persons.hidden, COUNT(DISTINCT p.id) AS total,
+            (SELECT cover.id FROM faces cover JOIN photos cover_photo ON cover_photo.id = cover.photo_id
+                AND cover_photo.available = 1 AND cover_photo.modified = cover.modified AND cover_photo.bytes = cover.bytes
+                WHERE cover.person_id = persons.id AND cover.ignored = 0 AND cover.active = 1
+                ORDER BY json_extract(cover.box, \'$[2]\') >= ' .
+                    self::COVER_MIN_FACE_WIDTH .
+                    ' DESC, cover_photo.taken DESC, json_extract(cover.box, \'$[2]\') DESC, cover.id DESC LIMIT 1) AS cover,
+            (persons.hidden = 0 AND (persons.name <> \'\' OR MAX(f.origin = \'manual\') = 1 OR (COUNT(DISTINCT p.id) >= ' .
+                    self::LISTED_MIN_PHOTOS .
+                    ' AND COUNT(DISTINCT substr(p.taken, 1, 10)) >= ' .
+                    self::LISTED_MIN_DAYS .
+                    '))) AS listed
             FROM persons LEFT JOIN faces f ON f.person_id = persons.id AND f.ignored = 0 AND f.active = 1
             LEFT JOIN photos p ON p.id = f.photo_id AND p.available = 1 AND p.modified = f.modified AND p.bytes = f.bytes
-            GROUP BY persons.id ORDER BY unicode_lower(persons.name), persons.id'
+            GROUP BY persons.id ORDER BY total DESC, unicode_lower(persons.name), persons.id'
             )
             ->fetchAll();
     }
@@ -75,12 +108,38 @@ final class FaceStore
         $query = $this->database->prepare(
             'SELECT persons.id, persons.name, MIN(f.id) AS cover
             FROM faces f JOIN photos p ON p.id = f.photo_id JOIN persons ON persons.id = f.person_id
-            WHERE f.photo_id = ? AND f.ignored = 0 AND ' .
+            WHERE f.photo_id = ? AND f.ignored = 0 AND persons.hidden = 0 AND ' .
                 self::CURRENT_FACE .
                 ' GROUP BY persons.id'
         );
         $query->execute([$id]);
         return $query->fetchAll();
+    }
+
+    /**
+     * Expose positions and assignments for the viewer overlay; faces of hidden persons stay invisible.
+     *
+     * @return list<array{id: int, box: list<float>, person: ?int, name: string}>
+     */
+    public function photoFaces(int $id): array
+    {
+        $query = $this->database->prepare(
+            'SELECT f.id, f.box, persons.id AS person, COALESCE(persons.name, \'\') AS name
+            FROM faces f JOIN photos p ON p.id = f.photo_id LEFT JOIN persons ON persons.id = f.person_id
+            WHERE f.photo_id = ? AND f.ignored = 0 AND (persons.id IS NULL OR persons.hidden = 0) AND ' .
+                self::CURRENT_FACE .
+                ' ORDER BY f.id'
+        );
+        $query->execute([$id]);
+        return array_map(
+            static fn(array $face): array => [
+                'id' => (int) $face['id'],
+                'box' => json_decode($face['box'], true, flags: JSON_THROW_ON_ERROR),
+                'person' => $face['person'] === null ? null : (int) $face['person'],
+                'name' => $face['name']
+            ],
+            $query->fetchAll()
+        );
     }
 
     /**
@@ -144,7 +203,8 @@ final class FaceStore
         $this->database->exec('BEGIN IMMEDIATE');
         try {
             $query = $this->database->prepare('SELECT p.*, s.status AS face_status, s.model AS face_model,
-                s.modified AS face_modified, s.bytes AS face_bytes FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.id = ?');
+                s.modified AS face_modified, s.bytes AS face_bytes, s.detection AS face_detection
+                FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.id = ?');
             $query->execute([$photo['id']]);
             $current = $query->fetch();
             if (
@@ -156,11 +216,41 @@ final class FaceStore
                 (in_array($current['face_status'], ['done', 'unsupported'], true) &&
                     $current['face_model'] === self::MODEL &&
                     $current['face_modified'] === $photo['modified'] &&
-                    $current['face_bytes'] === $photo['bytes'])
+                    $current['face_bytes'] === $photo['bytes'] &&
+                    $current['face_detection'] >= self::DETECTION)
             ) {
                 return false;
             }
-            if ($result->status !== 'error') {
+            // an unchanged file keeps every existing face and assignment; analysis only adds faces not yet known
+            $additive =
+                $current['face_model'] === self::MODEL &&
+                $current['face_modified'] === $photo['modified'] &&
+                $current['face_bytes'] === $photo['bytes'];
+            if ($additive && $result->status !== 'error') {
+                $known = $this->database->prepare(
+                    'SELECT box FROM faces WHERE photo_id = ? AND modified = ? AND bytes = ?'
+                );
+                $known->execute([$photo['id'], $photo['modified'], $photo['bytes']]);
+                $boxes = array_map(
+                    fn(string $box): array => json_decode($box, true, flags: JSON_THROW_ON_ERROR),
+                    $known->fetchAll(\PDO::FETCH_COLUMN)
+                );
+                foreach ($result->faces as $face) {
+                    foreach ($boxes as $box) {
+                        $overlap =
+                            max(
+                                0,
+                                min($box[0] + $box[2], $face->box[0] + $face->box[2]) - max($box[0], $face->box[0])
+                            ) *
+                            max(0, min($box[1] + $box[3], $face->box[1] + $face->box[3]) - max($box[1], $face->box[1]));
+                        if ($overlap / ($box[2] * $box[3] + $face->box[2] * $face->box[3] - $overlap) >= 0.3) {
+                            continue 2;
+                        }
+                    }
+                    $this->insertFace($photo, $face);
+                }
+            }
+            if (!$additive && $result->status !== 'error') {
                 $old = $this->database->prepare("SELECT * FROM faces WHERE photo_id = ? AND origin = 'manual'");
                 $old->execute([$photo['id']]);
                 $manual = $old->fetchAll();
@@ -196,37 +286,24 @@ final class FaceStore
                             ]);
                         continue;
                     }
-                    $person = $this->match($face->embedding);
-                    if ($person === null) {
-                        $this->database->exec('INSERT INTO persons DEFAULT VALUES');
-                        $person = (int) $this->database->lastInsertId();
-                    }
-                    $this->database
-                        ->prepare(
-                            'INSERT INTO faces (photo_id, person_id, modified, bytes, model, box, embedding, crop) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                        )
-                        ->execute([
-                            $photo['id'],
-                            $person,
-                            $photo['modified'],
-                            $photo['bytes'],
-                            self::MODEL,
-                            json_encode($face->box),
-                            json_encode($face->embedding),
-                            base64_decode($face->crop)
-                        ]);
-                    $faceId = (int) $this->database->lastInsertId();
-                    $this->database
-                        ->prepare('UPDATE persons SET title_face = COALESCE(title_face, ?) WHERE id = ?')
-                        ->execute([$faceId, $person]);
+                    $this->insertFace($photo, $face);
                 }
             }
             $this->database
                 ->prepare(
-                    'INSERT INTO face_state (photo_id, modified, bytes, model, status, attempted) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(photo_id) DO UPDATE SET modified=excluded.modified, bytes=excluded.bytes, model=excluded.model, status=excluded.status, attempted=excluded.attempted'
+                    'INSERT INTO face_state (photo_id, modified, bytes, model, status, attempted, detection) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(photo_id) DO UPDATE SET modified=excluded.modified, bytes=excluded.bytes, model=excluded.model,
+                status=excluded.status, attempted=excluded.attempted, detection=excluded.detection'
                 )
-                ->execute([$photo['id'], $photo['modified'], $photo['bytes'], self::MODEL, $result->status, time()]);
+                ->execute([
+                    $photo['id'],
+                    $photo['modified'],
+                    $photo['bytes'],
+                    self::MODEL,
+                    $result->status,
+                    time(),
+                    self::DETECTION
+                ]);
             $this
                 ->database->exec("DELETE FROM persons WHERE name = '' AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = persons.id)
                 AND NOT EXISTS (SELECT 1 FROM person_separations WHERE person_a = persons.id OR person_b = persons.id)");
@@ -240,14 +317,86 @@ final class FaceStore
     }
 
     /**
-     * Use the complete group's normalized centroid while rejecting incompatible outliers.
+     * Tiny faces give unreliable embeddings and are mostly strangers, so they stay unassigned.
+     */
+    private function insertFace(array $photo, \stdClass $face): void
+    {
+        $person = $face->box[2] < self::MIN_FACE_WIDTH ? null : $this->match($face->embedding);
+        if ($person === null && $face->box[2] >= self::MIN_FACE_WIDTH) {
+            $this->database->exec('INSERT INTO persons DEFAULT VALUES');
+            $person = (int) $this->database->lastInsertId();
+        }
+        $this->database
+            ->prepare(
+                'INSERT INTO faces (photo_id, person_id, modified, bytes, model, box, embedding, crop) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+            )
+            ->execute([
+                $photo['id'],
+                $person,
+                $photo['modified'],
+                $photo['bytes'],
+                self::MODEL,
+                json_encode($face->box),
+                json_encode($face->embedding),
+                base64_decode($face->crop)
+            ]);
+    }
+
+    /**
+     * Prefer curated identities: a named person wins only when its nearest faces clearly beat every other named person
+     * and every hidden face; otherwise the centroid rule runs over hidden and unnamed groups, so strangers keep
+     * collecting in their hidden groups instead of reappearing.
      */
     private function match(array $embedding): ?int
     {
+        $query = $this->database->prepare(
+            "SELECT f.person_id, f.embedding, persons.name, persons.hidden,
+            (persons.auto_match = 1 AND NOT EXISTS (SELECT 1 FROM person_separations WHERE person_a = persons.id OR person_b = persons.id)) AS automatic
+            FROM faces f JOIN photos p ON p.id = f.photo_id JOIN persons ON persons.id = f.person_id
+            WHERE " .
+                self::CURRENT_FACE .
+                ' AND f.ignored = 0 AND f.model = ?'
+        );
+        $query->execute([self::MODEL]);
+        $named = [];
+        $hidden = -1.0;
+        $fallback = [];
+        foreach ($query->fetchAll() as $row) {
+            $vector = json_decode($row['embedding'], true, flags: JSON_THROW_ON_ERROR);
+            $similarity = 0.0;
+            foreach ($embedding as $dimension => $value) {
+                $similarity += $value * $vector[$dimension];
+            }
+            if ($row['hidden']) {
+                $hidden = max($hidden, $similarity);
+            }
+            if ($row['name'] !== '' && !$row['hidden']) {
+                $named[$row['person_id']][] = $similarity;
+                continue;
+            }
+            if ($row['hidden'] || $row['automatic']) {
+                $fallback[$row['person_id']][] = $vector;
+            }
+        }
+        $scores = [];
+        foreach ($named as $person => $similarities) {
+            rsort($similarities);
+            $nearest = array_slice($similarities, 0, self::NAMED_NEIGHBOURS);
+            $scores[$person] = array_sum($nearest) / count($nearest);
+        }
+        arsort($scores);
+        $values = array_values($scores);
+        if (
+            $values !== [] &&
+            $values[0] >= self::NAMED_THRESHOLD &&
+            $values[0] - max($values[1] ?? -1.0, $hidden) >= self::MATCH_MARGIN
+        ) {
+            return (int) array_key_first($scores);
+        }
         $candidate = $this->profile([$embedding], false);
         $scores = [];
-        foreach ($this->profiles($this->groupRows()) as $person => $group) {
-            $scores[$person] = $this->similarity($candidate, $group);
+        foreach ($fallback as $person => $vectors) {
+            $scores[$person] = $this->similarity($candidate, $this->profile($vectors, false));
         }
         arsort($scores);
         $values = array_values($scores);
@@ -309,7 +458,7 @@ final class FaceStore
     }
 
     /**
-     * Prevent conflicting manual groups and transitive similarity chains from merging.
+     * Prevent conflicting manual groups from merging and reject groups that only a few similar faces connect.
      */
     private function similarity(array $left, array $right): float
     {
@@ -320,18 +469,15 @@ final class FaceStore
         if ($score < self::MATCH_THRESHOLD - self::MATCH_MARGIN) {
             return -1.0;
         }
+        $total = 0.0;
         foreach ($left['vectors'] as $first) {
             foreach ($right['vectors'] as $second) {
-                $pair = 0.0;
                 foreach ($first as $dimension => $value) {
-                    $pair += $value * $second[$dimension];
-                }
-                if ($pair < self::MATCH_FLOOR) {
-                    return -1.0;
+                    $total += $value * $second[$dimension];
                 }
             }
         }
-        return $score;
+        return $total / (count($left['vectors']) * count($right['vectors'])) < self::MATCH_MEAN ? -1.0 : $score;
     }
 
     /**
@@ -438,7 +584,7 @@ final class FaceStore
         }
         $this->database->exec('BEGIN IMMEDIATE');
         try {
-            $table = in_array($action, ['rename', 'merge'], true) ? 'persons' : 'faces';
+            $table = in_array($action, ['rename', 'merge', 'hide', 'show'], true) ? 'persons' : 'faces';
             $query = $this->database->prepare("SELECT * FROM $table WHERE id = ?");
             $query->execute([$id]);
             $row = $query->fetch();
@@ -453,7 +599,11 @@ final class FaceStore
                 }
             }
             $person = (int) ($row['person_id'] ?? $id);
-            if ($action === 'rename') {
+            if (in_array($action, ['hide', 'show'], true)) {
+                $this->database
+                    ->prepare('UPDATE persons SET hidden = ? WHERE id = ?')
+                    ->execute([(int) ($action === 'hide'), $id]);
+            } elseif ($action === 'rename') {
                 $this->database->prepare('UPDATE persons SET name = ? WHERE id = ?')->execute([trim($name), $id]);
                 $this->database->prepare("UPDATE faces SET origin = 'manual' WHERE person_id = ?")->execute([$id]);
             } elseif ($action === 'merge') {

@@ -107,12 +107,40 @@ document.addEventListener('change', event => {
     navigatePage(url.href).catch(() => {});
 });
 
+document.addEventListener(
+    'toggle',
+    event => {
+        let $picker = event.target;
+        if (!$picker.matches?.('.person-picker') || !$picker.open) return;
+        let $options = $picker.querySelector('.person-picker-options');
+        if ($options.childElementCount === 0)
+            $options.append(document.querySelector('#person-picker-options').content.cloneNode(true));
+    },
+    true
+);
+
+document.addEventListener('change', event => {
+    let $picker = event.target.closest('.person-picker');
+    if (!$picker) return;
+    $picker
+        .querySelector('[data-picker-label]')
+        .replaceChildren(
+            ...[...event.target.closest('label').childNodes]
+                .filter($node => $node !== event.target)
+                .map($node => $node.cloneNode(true))
+        );
+    $picker.open = false;
+});
+
 document.addEventListener('submit', async event => {
     let $form = event.target;
     if (!$form.matches('.person-form')) return;
     event.preventDefault();
-    let target = $form.querySelector('select')?.selectedOptions[0]?.textContent || '';
-    if ($form.dataset.confirm && !window.confirm(`${$form.dataset.confirm}\n${target}`)) return;
+    let $picker = $form.querySelector('.person-picker');
+    if ($picker && !$picker.querySelector('input:checked')) {
+        $picker.open = true;
+        return;
+    }
     let body = new FormData($form);
     body.set('csrf', document.querySelector('meta[name="csrf-token"]').content);
     let $button = $form.querySelector('button');

@@ -478,10 +478,20 @@ final class PhotoButler
                 $this->jobs->log('faces', 'Lade Thumbnail und analysiere Gesichter für Foto ' . $photo['id'] . ' …');
                 try {
                     $path = $this->imagePath((int) $photo['id'], cachedOnly: true);
-                    if ($path === null) {
+                    $previewUnavailable =
+                        $path === null &&
+                        ($this->oneDrive?->photo((int) $photo['id'])['preview_fallback'] ?? null) !== null;
+                    if ($path === null && !$previewUnavailable) {
                         throw new \RuntimeException('Thumbnail fehlt. Zuerst den Thumbnail-Job ausführen.');
                     }
-                    $result = new FaceAnalyzer($this->dataPath)->analyze($path);
+                    if ($previewUnavailable) {
+                        $result = new \stdClass();
+                        $result->status = 'unsupported';
+                        $result->faces = [];
+                    }
+                    if (!$previewUnavailable) {
+                        $result = new FaceAnalyzer($this->dataPath)->analyze($path);
+                    }
                 } catch (\RuntimeException | \JsonException | \ErrorException) {
                     $result = new \stdClass();
                     $result->status = 'error';
@@ -878,6 +888,9 @@ final class PhotoButler
         }
         if (isset($_GET['detail'])) {
             $photo = $this->photo((int) $_GET['detail']);
+            if ($photo !== null) {
+                $photo->faces = $this->faces->photoFaces($photo->id);
+            }
             http_response_code($photo === null ? 404 : 200);
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode($photo, JSON_THROW_ON_ERROR);
@@ -962,9 +975,15 @@ final class PhotoButler
         }
         unset($state);
         $peopleView = ($_GET['view'] ?? '') === 'persons';
-        $persons = $this->faces->persons();
+        $hiddenView = ($_GET['hidden'] ?? '') === '1';
+        $everyPerson = $this->faces->persons();
+        $persons = array_values(
+            array_filter($everyPerson, static fn(array $item): bool => (bool) $item['listed'] !== $hiddenView)
+        );
+        $shownPersons = count(array_filter(array_column($everyPerson, 'listed')));
+        $hiddenPersons = count($everyPerson) - $shownPersons;
         $selectedPerson = null;
-        foreach ($persons as $item) {
+        foreach ($everyPerson as $item) {
             if ((int) $item['id'] === $person) {
                 $selectedPerson = $item;
             }
@@ -1054,14 +1073,18 @@ final class PhotoButler
     private function photoStats(): array
     {
         $faceDue = FaceStore::DUE;
-        $statement = $this->database->prepare("SELECT COUNT(*) AS total,
+        $statement = $this->database->prepare(
+            "SELECT COUNT(*) AS total,
             COALESCE(SUM(p.status = 'done'), 0) AS tagged,
             COALESCE(SUM(p.priority = 1), 0) AS favorites,
             COALESCE(SUM(p.status = 'error'), 0) AS errors,
             COALESCE(SUM(s.status = 'error'), 0) AS face_errors,
-            COALESCE(SUM(s.status = 'excluded' OR (s.status IN ('done', 'unsupported') AND s.modified = p.modified AND s.bytes = p.bytes AND s.model = :model)), 0) AS face_done,
+            COALESCE(SUM(s.status = 'excluded' OR (s.status IN ('done', 'unsupported') AND s.modified = p.modified AND s.bytes = p.bytes AND s.model = :model AND s.detection >= " .
+                FaceStore::DETECTION .
+                ")), 0) AS face_done,
             COALESCE(SUM(p.status = 'pending' OR (p.status = 'error' AND p.attempted < :retry) OR $faceDue), 0) AS queued
-            FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1");
+            FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1"
+        );
         $statement->execute([':retry' => time() - 3600, ':model' => FaceStore::MODEL]);
         return $statement->fetch();
     }

@@ -870,6 +870,7 @@ final class PhotoButlerTest extends TestCase
         $peopleView = false;
         $person = 0;
         $persons = [];
+        $shownPersons = 0;
         $album = $query = $tag = '';
         $page = 1;
         $offset = 0;
@@ -1618,6 +1619,77 @@ final class PhotoButlerTest extends TestCase
                     $document->querySelector('#gallery-sort option[selected]')->getAttribute('value')
                 );
             }
+            $face = new stdClass();
+            $face->box = [0.1, 0.1, 0.2, 0.2];
+            $face->embedding = array_pad([1.0], 128, 0.0);
+            $face->crop = base64_encode($this->client->jpeg);
+            $analysis = new stdClass();
+            $analysis->status = 'done';
+            $analysis->faces = [$face];
+            $this->library->faces->save(
+                $this->library->database->query('SELECT * FROM photos WHERE id = ' . $id)->fetch(),
+                $analysis
+            );
+            $detail = json_decode($request('?detail=' . $id)[1], true, flags: JSON_THROW_ON_ERROR);
+            $this->assertCount(1, $detail['faces']);
+            $this->assertSame([0.1, 0.1, 0.2, 0.2], $detail['faces'][0]['box']);
+            $this->assertIsInt($detail['faces'][0]['person']);
+            $this->assertArrayNotHasKey('embedding', $detail['faces'][0]);
+            [$personsStatus, $personsBody] = $request('?view=persons');
+            $this->assertSame(200, $personsStatus);
+            $document = \Dom\HTMLDocument::createFromString($personsBody, LIBXML_NOERROR);
+            $this->assertCount(0, $document->querySelectorAll('.person-grid .person-card'));
+            $this->assertStringContainsString('Ausgeblendete Gruppen anzeigen (1)', $personsBody);
+            [, $personsBody] = $request('?view=persons&hidden=1');
+            $document = \Dom\HTMLDocument::createFromString($personsBody, LIBXML_NOERROR);
+            $this->assertCount(1, $document->querySelectorAll('.person-grid .person-card'));
+            $this->assertStringContainsString('Eingeblendete Personen anzeigen (0)', $personsBody);
+            preg_match('/name="csrf-token" content="([^"]+)"/', $personsBody, $match);
+            $person = (int) $this->library->database->query('SELECT person_id FROM faces')->fetchColumn();
+            $this->library->faces->correct('rename', $person, 'Gast');
+            $this->assertStringContainsString('Gast', $request('?view=persons')[1]);
+            $this->assertStringNotContainsString('Gast', $request('?view=persons&hidden=1')[1]);
+            [$hideStatus, $hideBody] = $request('', ['action' => 'face-hide', 'id' => $person, 'csrf' => $match[1]]);
+            $this->assertSame(200, $hideStatus, $hideBody);
+            $this->assertStringNotContainsString('Gast', $request('?view=persons')[1]);
+            $this->assertStringContainsString('Gast', $request('?view=persons&hidden=1')[1]);
+            [, $personBody] = $request('?view=persons&person=' . $person);
+            $this->assertStringContainsString('Person einblenden', $personBody);
+            $this->assertSame(200, $request('', ['action' => 'face-show', 'id' => $person, 'csrf' => $match[1]])[0]);
+            $this->assertStringContainsString('Gast', $request('?view=persons')[1]);
+            $friend = clone $face;
+            $friend->box = [0.5, 0.1, 0.2, 0.2];
+            $friend->embedding = array_pad([0.0, 1.0], 128, 0.0);
+            $analysis->faces = [$face, $friend];
+            $this->library->faces->reset($id, false);
+            $this->library->faces->save(
+                $this->library->database->query('SELECT * FROM photos WHERE id = ' . $id)->fetch(),
+                $analysis
+            );
+            $other = (int) $this->library->database
+                ->query('SELECT person_id FROM faces WHERE person_id <> ' . $person)
+                ->fetchColumn();
+            $this->library->faces->correct('rename', $other, 'Freund');
+            [, $personBody] = $request('?view=persons&person=' . $person);
+            $document = \Dom\HTMLDocument::createFromString($personBody, LIBXML_NOERROR);
+            $this->assertCount(
+                1 + count($this->library->faces->personFaces($person)),
+                $document->querySelectorAll('.person-picker')
+            );
+            $this->assertCount(0, $document->querySelectorAll('.person-picker input'));
+            $this->assertCount(
+                count($this->library->faces->personFaces($person)),
+                $document->querySelectorAll('.person-card form .person-picker')
+            );
+            $options = \Dom\HTMLDocument::createFromString(
+                '<!doctype html><body>' . $document->querySelector('#person-picker-options')->innerHTML,
+                LIBXML_NOERROR
+            );
+            $option = $options->querySelector('input[name="target"][value="' . $other . '"]');
+            $this->assertNotNull($option);
+            $this->assertStringStartsWith('?face=', $option->parentElement->querySelector('img')->getAttribute('src'));
+            $this->assertStringContainsString('Freund', $option->parentElement->textContent);
+            $this->assertNull($options->querySelector('input[value="' . $person . '"]'));
             preg_match('/name="csrf-token" content="([^"]+)"/', $body, $match);
             $csrf = $match[1];
             foreach (['scan', 'tag', 'job-start', 'job-pause', 'job-step'] as $action) {
@@ -1729,7 +1801,8 @@ final class PhotoButlerTest extends TestCase
                     'width',
                     'height',
                     'persons',
-                    'face_status'
+                    'face_status',
+                    'faces'
                 ],
                 array_keys($detail)
             );
