@@ -444,6 +444,50 @@ final class OneDriveTest extends TestCase
         $this->assertSame(1, $state['queued']);
     }
 
+    public function testCaptureDatesFromNamesAndFoldersCorrectExistingEntriesAndExclusions(): void
+    {
+        $this->index([
+            $this->folder('june', '2008.06'),
+            $this->folder('recent', '2025'),
+            $this->item('kodak', '100_0163.JPG', 'june', exif: false),
+            $this->item('favorite', '100_0164.JPG', 'june', exif: false),
+            $this->item('pixel', 'PXL_20250810_201051690.jpg', 'recent', exif: false),
+            $this->item('undated', 'Bild (2).jpg', exif: false)
+        ]);
+        $database = $this->library->database;
+        $database->exec("UPDATE photos SET taken = '2026-04-13 18:13:14', priority = 0");
+        $this->library->priority(2, 1);
+        $this->index([]);
+        $this->assertSame(
+            [
+                ['100_0163.JPG', '2008-06-01 00:00:00', -1],
+                ['100_0164.JPG', '2008-06-01 00:00:00', 1],
+                ['PXL_20250810_201051690.jpg', '2025-08-10 20:10:51', 0],
+                ['Bild (2).jpg', date('Y-m-d H:i:s', strtotime('2026-09-01T12:00:00Z')), -1]
+            ],
+            array_map(
+                static fn(array $row): array => [$row['name'], $row['taken'], (int) $row['priority']],
+                $database->query('SELECT name, taken, priority FROM photos ORDER BY id')->fetchAll()
+            )
+        );
+    }
+
+    public function testImportStoresOriginalDimensionsOfPhotosAndVideos(): void
+    {
+        $photo = $this->item('a', 'photo.jpg');
+        $photo['image'] = ['width' => 4000, 'height' => 3000];
+        $video = $this->item('b', 'clip.mov');
+        $video['video'] = ['width' => 1920, 'height' => 1080];
+        $this->index([$photo, $video, $this->item('c', 'sticker.webp')]);
+        $this->assertSame([4000, 3000], [$this->library->photo(1)->width, $this->library->photo(1)->height]);
+        $this->assertSame([1920, 1080], [$this->library->photo(2)->width, $this->library->photo(2)->height]);
+        $this->assertSame([0, 0], [$this->library->photo(3)->width, $this->library->photo(3)->height]);
+        $photo['cTag'] = 'v2';
+        $photo['image'] = ['width' => 3000, 'height' => 4000];
+        $this->index([$photo]);
+        $this->assertSame([3000, 4000], [$this->library->photo(1)->width, $this->library->photo(1)->height]);
+    }
+
     public function testFastCachePassDownloadsOnlyGapsAndCompletesInOneStep(): void
     {
         $this->index(array_map(fn(int $id): array => $this->item('item-' . $id), range(1, 250)));

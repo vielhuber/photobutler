@@ -870,6 +870,7 @@ textarea,
 }
 .person-form input,
 .person-form select,
+.person-filter input,
 .person-filter select {
     max-width: 100%;
     min-width: 0;

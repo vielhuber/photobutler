@@ -257,7 +257,11 @@ export function initializeGallery(navigatePage) {
             currentPhoto = photo;
             renderFaces(photo);
             $title.textContent = photo.name;
-            $date.textContent = `${photo.taken.slice(0, 10)} · ${photo.album} · ${photo.width} × ${photo.height}`;
+            $date.textContent = [
+                photo.taken.slice(0, 10),
+                photo.album,
+                ...(photo.width > 0 && photo.height > 0 ? [`${photo.width} × ${photo.height}`] : [])
+            ].join(' · ');
             $description.textContent = photo.description;
             $image.alt = photo.description || photo.name;
             $tags.value = photo.tags.join(', ');

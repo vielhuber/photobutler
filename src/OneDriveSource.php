@@ -125,7 +125,7 @@ final class OneDriveSource
                 $state['delta'] ??
                 '/drives/' .
                     rawurlencode($connection['drive']) .
-                    '/root/delta?$select=id,name,parentReference,file,folder,deleted,remoteItem,size,lastModifiedDateTime,cTag,eTag,photo';
+                    '/root/delta?$select=id,name,parentReference,file,folder,deleted,remoteItem,size,lastModifiedDateTime,cTag,eTag,photo,image,video';
             $database->beginTransaction();
             try {
                 $database->exec(
@@ -275,7 +275,7 @@ final class OneDriveSource
                         $path = $legacyRoot . '/' . $relative;
                     }
                     $find = $database->prepare(
-                        'SELECT id,path,modified,bytes,manual_tags,priority,taken FROM photos WHERE path=? UNION ALL SELECT id,path,modified,bytes,manual_tags,priority,NULL AS taken FROM photo_metadata WHERE path=? LIMIT 1'
+                        'SELECT id,path,modified,bytes,manual_tags,priority FROM photos WHERE path=? UNION ALL SELECT id,path,modified,bytes,manual_tags,priority FROM photo_metadata WHERE path=? LIMIT 1'
                     );
                     $find->execute([$path, $path]);
                     $saved = $find->fetch();
@@ -309,29 +309,28 @@ final class OneDriveSource
                     $modified = $changed
                         ? max(time(), (int) ($saved['modified'] ?? 0) + 1)
                         : $saved['modified'] ?? strtotime($item['lastModifiedDateTime']);
-                    $taken =
-                        !$changed && isset($saved['taken'])
-                            ? $saved['taken']
-                            : date(
-                                'Y-m-d H:i:s',
-                                strtotime($item['photo']['takenDateTime'] ?? $item['lastModifiedDateTime'])
-                            );
+                    $captured = new CaptureDate()->resolve($item, $relative);
+                    $taken = $captured ?? date('Y-m-d H:i:s', strtotime($item['lastModifiedDateTime']));
+                    $dimensions = $item['image'] ?? ($item['video'] ?? []);
                     $priority = $saved['priority'] ?? 0;
                     $lower = '/' . mb_strtolower($relative);
                     if (
                         $priority === 0 &&
-                        ($taken < '2023-01-01' ||
+                        ($captured === null ||
+                            $taken < '2025-01-01' ||
                             str_contains($lower, '/whatsapp animated gifs/') ||
                             (str_contains($lower, '/_whatsapp/') &&
-                                (str_contains($lower, '/.statuses/') || str_ends_with($lower, '.gif'))))
+                                (str_contains($lower, '/.statuses/') ||
+                                    str_contains($lower, ' stickers/') ||
+                                    str_ends_with($lower, '.gif'))))
                     ) {
                         $priority = -1;
                     }
                     $database
                         ->prepare(
-                            "INSERT INTO photos(id,root,path,album,name,modified,bytes,width,height,taken,seen,manual_tags,priority) VALUES(?,?,?,?,?,?,?,0,0,?,?,?,?)
+                            "INSERT INTO photos(id,root,path,album,name,modified,bytes,width,height,taken,seen,manual_tags,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(id) DO UPDATE SET root=excluded.root,name=excluded.name,album=excluded.album,seen=excluded.seen,available=1,priority=excluded.priority,
-                        modified=excluded.modified,bytes=excluded.bytes"
+                        modified=excluded.modified,bytes=excluded.bytes,taken=excluded.taken,width=excluded.width,height=excluded.height"
                         )
                         ->execute([
                             $id,
@@ -341,6 +340,8 @@ final class OneDriveSource
                             $item['name'],
                             $modified,
                             $item['size'],
+                            (int) ($dimensions['width'] ?? 0),
+                            (int) ($dimensions['height'] ?? 0),
                             $taken,
                             $seen,
                             $saved['manual_tags'] ?? null,
@@ -350,7 +351,7 @@ final class OneDriveSource
                         $database->prepare('DELETE FROM onedrive_preview_fallbacks WHERE photo_id=?')->execute([$id]);
                         $database
                             ->prepare(
-                                "UPDATE photos SET width=0,height=0,taken=?,status='pending',ai_tags='[]',description='',attempted=0 WHERE id=?"
+                                "UPDATE photos SET taken=?,status='pending',ai_tags='[]',description='',attempted=0 WHERE id=?"
                             )
                             ->execute([$taken, $id]);
                         foreach (['.jpg', '.jpg.webp'] as $suffix) {

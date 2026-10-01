@@ -111,9 +111,10 @@ trait CloudFixture
         string $name = 'photo.jpg',
         string $parent = 'root',
         string $version = 'v1',
-        string $modified = '2026-09-01T12:00:00Z'
+        string $modified = '2026-09-01T12:00:00Z',
+        bool $exif = true
     ): array {
-        return [
+        $item = [
             'id' => $id,
             'name' => $name,
             'parentReference' => ['id' => $parent],
@@ -122,6 +123,10 @@ trait CloudFixture
             'lastModifiedDateTime' => $modified,
             'cTag' => $version
         ];
+        if ($exif) {
+            $item['photo'] = ['takenDateTime' => $modified];
+        }
+        return $item;
     }
 
     private function folder(string $id, string $name, string $parent = 'root'): array

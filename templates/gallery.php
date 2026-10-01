@@ -105,7 +105,12 @@ $jobsView ??= false;
             as $item
         ): ?><option value="<?= (int) $item['id'] ?>"<?= $person === (int) $item['id']
     ? ' selected'
-    : '' ?>><?= $escape($item['name'] ?: 'Person ' . $item['id']) ?></option><?php endforeach; ?></select></label></div>
+    : '' ?>><?= $escape($item['name'] ?: 'Person ' . $item['id']) ?></option><?php endforeach; ?></select></label>
+        <form id="gallery-dates" class="person-filter"><label class="person-filter">Von <input type="date" id="gallery-from" value="<?= $escape(
+            $from
+        ) ?>"></label><label class="person-filter">Bis <input type="date" id="gallery-to" value="<?= $escape(
+    $to
+) ?>"></label><button class="chip" type="submit">Filtern</button></form></div>
         <section class="photos-section"><div class="section-heading"><h2>Fotos</h2><label class="gallery-view" for="gallery-columns"><select id="gallery-columns" aria-label="Spalten"><option value="3">3</option><option value="4">4</option><option value="5" selected>5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option></select></label><label class="gallery-view gallery-sorting" for="gallery-sort"><select id="gallery-sort" aria-label="Sortierung" data-seed="<?= $sort ===
         'random'
             ? $escape($seed)
@@ -123,7 +128,9 @@ $jobsView ??= false;
                 $album !== '' ||
                 $favorites !== '0' ||
                 $tag !== '' ||
-                $relevance !== 'all'
+                $relevance !== 'all' ||
+                $from !== '' ||
+                $to !== ''
             ): ?><a class="reset" href="?sort=<?= $escape($sort) ?>">Filter zurücksetzen ×</a><?php endif; ?>
             <div class="photo-grid">
                 <?php foreach (

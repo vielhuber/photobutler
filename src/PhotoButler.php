@@ -184,7 +184,9 @@ final class PhotoButler
         string $relevance = 'all',
         string $seed = '',
         int $id = 0,
-        ?int $offset = null
+        ?int $offset = null,
+        string $from = '',
+        string $to = ''
     ): array {
         if ($sort === 'random') {
             $this->database->createFunction(
@@ -210,6 +212,8 @@ final class PhotoButler
             person: $person,
             relevance: $relevance,
             id: $id,
+            from: $from,
+            to: $to,
             suffix: 'ORDER BY ' . $order . ' LIMIT 60 OFFSET ' . max(0, $offset ?? (max(1, $page) - 1) * 60)
         );
         return array_map(fn(array $row): \stdClass => $this->photoFromRow($row), $statement->fetchAll());
@@ -224,7 +228,9 @@ final class PhotoButler
         string $tag = '',
         bool|string $favorites = false,
         int $person = 0,
-        string $relevance = 'all'
+        string $relevance = 'all',
+        string $from = '',
+        string $to = ''
     ): int {
         return (int) $this->selectPhotos(
             columns: 'COUNT(*)',
@@ -233,7 +239,9 @@ final class PhotoButler
             tag: $tag,
             favorites: $favorites,
             person: $person,
-            relevance: $relevance
+            relevance: $relevance,
+            from: $from,
+            to: $to
         )->fetchColumn();
     }
 
@@ -249,6 +257,8 @@ final class PhotoButler
         int $person = 0,
         string $relevance = 'all',
         int $id = 0,
+        string $from = '',
+        string $to = '',
         string $suffix = ''
     ): \PDOStatement {
         $favoriteMode = match ($favorites) {
@@ -263,6 +273,7 @@ final class PhotoButler
             AND (? = '0' OR EXISTS (SELECT 1 FROM faces f WHERE f.photo_id = photos.id AND f.person_id = ? AND f.ignored = 0 AND f.active = 1 AND f.modified = photos.modified AND f.bytes = photos.bytes))
             AND (? = '' OR album = ?) AND (? = '0' OR (priority = 1) = CAST(? AS INTEGER))
             AND (? = '' OR EXISTS (SELECT 1 FROM json_each(COALESCE(manual_tags, ai_tags)) WHERE value = ?))
+            AND (? = '' OR substr(taken, 1, 10) >= ?) AND (? = '' OR substr(taken, 1, 10) <= ?)
             AND unicode_lower(name || ' ' || album || ' ' || description || ' ' || COALESCE(manual_tags, ai_tags)) LIKE ? ESCAPE '\'
             $suffix");
         $statement->execute([
@@ -282,6 +293,10 @@ final class PhotoButler
             (int) ($favoriteMode === '1'),
             $tag,
             $tag,
+            $from,
+            $from,
+            $to,
+            $to,
             $query
         ]);
         return $statement;
@@ -959,6 +974,14 @@ final class PhotoButler
         $page = max(1, min(1000000, (int) ($_GET['page'] ?? 1)));
         $offset = max(0, min(60000000, (int) ($_GET['offset'] ?? ($page - 1) * 60)));
         $person = max(0, (int) ($_GET['person'] ?? 0));
+        [$from, $to] = array_map(
+            static fn(mixed $date): string => is_string($date) &&
+            preg_match('/^(\d{4})-(\d{2})-(\d{2})$/D', $date, $match) === 1 &&
+            checkdate((int) $match[2], (int) $match[3], (int) $match[1])
+                ? $date
+                : '',
+            [$_GET['from'] ?? '', $_GET['to'] ?? '']
+        );
         $jobsView = ($_GET['view'] ?? '') === 'jobs';
         $jobs = $jobsView ? $this->jobs->all() : [];
         $jobCommands = [];
@@ -1001,7 +1024,9 @@ final class PhotoButler
                     person: $person,
                     relevance: $relevance,
                     seed: $seed,
-                    offset: $offset
+                    offset: $offset,
+                    from: $from,
+                    to: $to
                 );
         $matchedPhotos =
             $peopleView || $jobsView
@@ -1011,7 +1036,9 @@ final class PhotoButler
                     tag: $tag,
                     favorites: $favorites,
                     person: $person,
-                    relevance: $relevance
+                    relevance: $relevance,
+                    from: $from,
+                    to: $to
                 );
         $tags = $this->database
             ->query(
@@ -1043,7 +1070,9 @@ final class PhotoButler
             'favorites' => $favorites,
             'sort' => $sort,
             'relevance' => $relevance,
-            'seed' => $sort === 'random' ? $seed : ''
+            'seed' => $sort === 'random' ? $seed : '',
+            'from' => $from,
+            'to' => $to
         ];
         $image = filter_var($_GET['image'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         $selectedMedia =
@@ -1054,7 +1083,9 @@ final class PhotoButler
                     favorites: $favorites,
                     person: $person,
                     relevance: $relevance,
-                    id: $image
+                    id: $image,
+                    from: $from,
+                    to: $to
                 )
                 : [];
         $selectedPhoto = $selectedMedia[0]->id ?? 0;

@@ -107,6 +107,24 @@ document.addEventListener('change', event => {
     navigatePage(url.href).catch(() => {});
 });
 
+document.addEventListener('submit', event => {
+    let $form = event.target;
+    if ($form.id !== 'gallery-dates') return;
+    event.preventDefault();
+    let url = new URL(location.href);
+    for (let [id, parameter] of [
+        ['gallery-from', 'from'],
+        ['gallery-to', 'to']
+    ]) {
+        let value = $form.querySelector(`#${id}`).value;
+        if (value === '') url.searchParams.delete(parameter);
+        else url.searchParams.set(parameter, value);
+    }
+    url.searchParams.delete('page');
+    url.searchParams.delete('offset');
+    navigatePage(url.href).catch(() => {});
+});
+
 document.addEventListener(
     'toggle',
     event => {

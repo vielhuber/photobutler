@@ -89,12 +89,18 @@ final class PhotoButlerTest extends TestCase
             $this->folder('statuses', '.Statuses', 'whatsapp'),
             $this->folder('animated', 'WhatsApp Animated Gifs', 'whatsapp'),
             $this->folder('images', 'WhatsApp Images', 'whatsapp'),
+            $this->folder('stickers', 'WhatsApp Stickers', 'whatsapp'),
+            $this->folder('backup', 'WhatsApp Backup Excluded Stickers', 'whatsapp'),
+            $this->folder('own', 'Stickers', 'urlaub'),
             $this->item('meer', 'Meer.jpg', 'urlaub'),
-            $this->item('old', 'old.jpg', modified: '2022-12-31T12:00:00Z'),
-            $this->item('story', 'story.jpg', 'statuses', modified: '2024-01-01T12:00:00Z'),
-            $this->item('animation', 'animation.gif', 'animated', modified: '2024-01-01T12:00:00Z'),
-            $this->item('other', 'other.GIF', 'images', modified: '2024-01-01T12:00:00Z'),
-            $this->item('ordinary', 'ordinary.gif', modified: '2024-01-01T12:00:00Z')
+            $this->item('old', 'old.jpg', modified: '2024-12-31T12:00:00Z'),
+            $this->item('story', 'story.jpg', 'statuses', modified: '2025-01-01T12:00:00Z'),
+            $this->item('animation', 'animation.gif', 'animated', modified: '2025-01-01T12:00:00Z'),
+            $this->item('other', 'other.GIF', 'images', modified: '2025-01-01T12:00:00Z'),
+            $this->item('ordinary', 'ordinary.gif', modified: '2025-01-01T12:00:00Z'),
+            $this->item('sticker', 'sticker.webp', 'stickers', modified: '2025-01-01T12:00:00Z'),
+            $this->item('backup-sticker', 'backup.webp', 'backup', modified: '2025-01-01T12:00:00Z'),
+            $this->item('own-sticker', 'own.webp', 'own', modified: '2025-01-01T12:00:00Z')
         ]);
         $priorities = $this->library->database
             ->query('SELECT name, priority FROM photos')
@@ -104,6 +110,9 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(-1, $priorities['animation.gif']);
         $this->assertSame(-1, $priorities['other.GIF']);
         $this->assertSame(0, $priorities['ordinary.gif']);
+        $this->assertSame(-1, $priorities['sticker.webp']);
+        $this->assertSame(-1, $priorities['backup.webp']);
+        $this->assertSame(0, $priorities['own.webp']);
         $this->assertSame(0, $priorities['Meer.jpg']);
         $excluded = $this->library->database
             ->query('SELECT id FROM photos WHERE priority = -1')
@@ -112,7 +121,7 @@ final class PhotoButlerTest extends TestCase
             $this->library->priority((int) $id, 1);
         }
         $this->index([$this->item('old', 'old.jpg', version: 'v2', modified: '2022-12-30T12:00:00Z')]);
-        $this->assertCount(4, $this->library->photos(favorites: true));
+        $this->assertCount(6, $this->library->photos(favorites: true));
         $photo = $this->library->photos(album: 'Urlaub')[0];
         $this->library->oneDrive->previews([$photo->id]);
         $cache = $this->library->imagePath($photo->id);
@@ -124,7 +133,7 @@ final class PhotoButlerTest extends TestCase
         $this->library->jobs->reset('scan');
         $this->index([]);
         $this->assertSame(-1, $this->library->photo($photo->id)->priority);
-        $this->assertCount(4, $this->library->photos(favorites: true));
+        $this->assertCount(6, $this->library->photos(favorites: true));
         foreach ($excluded as $id) {
             $this->library->priority((int) $id, 0);
         }
@@ -872,6 +881,8 @@ final class PhotoButlerTest extends TestCase
         $persons = [];
         $shownPersons = 0;
         $album = $query = $tag = '';
+        $from = '2024-01-01';
+        $to = '2024-12-31';
         $page = 1;
         $offset = 0;
         $tags = [];
@@ -880,7 +891,9 @@ final class PhotoButlerTest extends TestCase
             'album' => 'Urlaub',
             'tag' => 'Meer',
             'favorites' => '1',
-            'sort' => $sort
+            'sort' => $sort,
+            'from' => $from,
+            'to' => $to
         ];
         $escape = fn(string $value): string => htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
         ob_start();
@@ -961,6 +974,46 @@ final class PhotoButlerTest extends TestCase
             $next
         );
         $this->assertSame($pagination + ['page' => '2', 'offset' => '60'], $next);
+        $this->assertSame('2024-01-01', $document->querySelector('#gallery-from')->getAttribute('value'));
+        $this->assertSame('2024-12-31', $document->querySelector('#gallery-to')->getAttribute('value'));
+        $this->assertNotNull($document->querySelector('.reset'));
+    }
+
+    public function testDateFilterIsInclusiveAndCombinesWithListingsCountsAndViewerLookups(): void
+    {
+        $this->indexMeer();
+        $insert = $this->library->database->prepare("INSERT INTO photos
+            (root, path, album, name, modified, bytes, width, height, taken, seen, priority)
+            VALUES ('/photos', ?, 'Urlaub', ?, 1, 1, 0, 0, ?, 'test', ?)");
+        foreach (
+            [
+                ['before.jpg', '2023-12-31 23:59:59', 0],
+                ['start.jpg', '2024-01-01 00:00:00', 0],
+                ['end.jpg', '2024-12-31 23:59:59', 1],
+                ['after.jpg', '2025-01-01 00:00:00', 0]
+            ]
+            as [$name, $taken, $priority]
+        ) {
+            $insert->execute(['/photos/' . $name, $name, $taken, $priority]);
+        }
+        $names = fn(array $photos): array => array_column($photos, 'name');
+        $this->assertSame(
+            ['end.jpg', 'start.jpg'],
+            $names($this->library->photos(relevance: 'all', from: '2024-01-01', to: '2024-12-31'))
+        );
+        $this->assertSame(2, $this->library->photoCount(relevance: 'all', from: '2024-01-01', to: '2024-12-31'));
+        $this->assertSame(
+            ['Meer.jpg', 'after.jpg', 'end.jpg', 'start.jpg'],
+            $names($this->library->photos(relevance: 'all', from: '2024-01-01'))
+        );
+        $this->assertSame(
+            ['start.jpg', 'before.jpg'],
+            $names($this->library->photos(relevance: 'unrated', to: '2024-06-30'))
+        );
+        $this->assertSame(1, $this->library->photoCount(relevance: 'relevant', from: '2024-12-31', to: '2024-12-31'));
+        $id = (int) $this->library->database->query("SELECT id FROM photos WHERE name = 'after.jpg'")->fetchColumn();
+        $this->assertCount(1, $this->library->photos(relevance: 'all', id: $id, from: '2025-01-01'));
+        $this->assertCount(0, $this->library->photos(relevance: 'all', id: $id, to: '2024-12-31'));
     }
 
     public function testPhotoBatchesRetainFiltersAndDoNotOverlap(): void
@@ -1690,6 +1743,22 @@ final class PhotoButlerTest extends TestCase
             $this->assertStringStartsWith('?face=', $option->parentElement->querySelector('img')->getAttribute('src'));
             $this->assertStringContainsString('Freund', $option->parentElement->textContent);
             $this->assertNull($options->querySelector('input[value="' . $person . '"]'));
+            foreach (
+                [
+                    'relevance=all&from=2026-09-01&to=2026-09-01' => ['2026-09-01', '2026-09-01', 1],
+                    'relevance=all&from=2026-09-02' => ['2026-09-02', '', 0],
+                    'relevance=all&from=2026-02-30&to=01.09.2026' => ['', '', 1],
+                    'relevance=all&from[]=2026-09-02' => ['', '', 1]
+                ]
+                as $query => [$from, $to, $count]
+            ) {
+                [$dateStatus, $dateBody] = $request('?' . $query);
+                $this->assertSame(200, $dateStatus);
+                $document = \Dom\HTMLDocument::createFromString($dateBody, LIBXML_NOERROR);
+                $this->assertSame($from, $document->querySelector('#gallery-from')->getAttribute('value'));
+                $this->assertSame($to, $document->querySelector('#gallery-to')->getAttribute('value'));
+                $this->assertCount($count, $document->querySelectorAll('.photo-card'));
+            }
             preg_match('/name="csrf-token" content="([^"]+)"/', $body, $match);
             $csrf = $match[1];
             foreach (['scan', 'tag', 'job-start', 'job-pause', 'job-step'] as $action) {
