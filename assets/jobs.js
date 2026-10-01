@@ -52,10 +52,10 @@ export function initializeJobs($main) {
             if (resets.has(job)) return;
             if ($button.dataset.jobAction === 'reset') {
                 let confirmations = {
-                    scan: 'Eingelesenen Katalog und Importfortschritt zurücksetzen? Originale, Favoriten, manuelle Tags und Personeninformationen bleiben erhalten. Favoriten und Tags werden beim erneuten manuellen Import wieder zugeordnet.',
+                    scan: 'Eingelesenen Katalog und Importfortschritt zurücksetzen? Originale, Bewertungen und Personeninformationen bleiben erhalten. Bewertungen werden beim erneuten manuellen Import wieder zugeordnet.',
                     previews:
                         'Erzeugte Thumbnails und Bildgenerierungsfortschritt löschen? Originale bleiben unverändert. Es wird kein Job automatisch gestartet.',
-                    tag: 'KI-generierte Tags, Beschreibungen und KI-Jobfortschritt löschen? Manuelle Tags und Favoriten bleiben erhalten.',
+                    tag: 'KI-Bewertungen und KI-Jobfortschritt zurücksetzen? Von der KI eingeordnete Fotos werden wieder unbewertet; von dir gesetzte oder geänderte Bewertungen bleiben erhalten.',
                     faces: 'Automatische Gesichtserkennungen und Gesichter-Jobfortschritt löschen? Manuell gepflegte Personen, Zuordnungen und Erkennungsausschlüsse bleiben erhalten.'
                 };
                 if (!window.confirm(confirmations[job])) return;

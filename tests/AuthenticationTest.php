@@ -159,7 +159,7 @@ final class AuthenticationTest extends TestCase
             [$status, $body] = $this->request('?jobs=1');
             $this->assertSame(200, $status, file_get_contents($this->root . '/server.log'));
             $jobs = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
-            $this->assertSame(['scan', 'previews', 'tag', 'faces'], array_keys($jobs));
+            $this->assertSame(['scan', 'previews', 'faces', 'tag'], array_keys($jobs));
             foreach ($jobs as $job) {
                 $this->assertSame('idle', $job['status']);
                 $this->assertSame(0, $job['total']);
@@ -222,8 +222,8 @@ final class AuthenticationTest extends TestCase
         $this->assertSame(
             "Galerie einlesen: läuft bereits\n" .
                 "Thumbnails downloaden: läuft bereits\n" .
-                "KI-Tagging: übersprungen (KI nicht konfiguriert)\n" .
-                "Gesichtertagging: übersprungen (Gesichtserkennung nicht installiert)\n",
+                "Gesichtertagging: übersprungen (Gesichtserkennung nicht installiert)\n" .
+                "KI-Bewertung: übersprungen (KI nicht konfiguriert)\n",
             $body
         );
         $this->assertStringNotContainsStringIgnoringCase('Set-Cookie', $headers);

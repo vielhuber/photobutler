@@ -275,7 +275,7 @@ final class OneDriveSource
                         $path = $legacyRoot . '/' . $relative;
                     }
                     $find = $database->prepare(
-                        'SELECT id,path,modified,bytes,manual_tags,priority FROM photos WHERE path=? UNION ALL SELECT id,path,modified,bytes,manual_tags,priority FROM photo_metadata WHERE path=? LIMIT 1'
+                        'SELECT id,path,modified,bytes,priority FROM photos WHERE path=? UNION ALL SELECT id,path,modified,bytes,priority FROM photo_metadata WHERE path=? LIMIT 1'
                     );
                     $find->execute([$path, $path]);
                     $saved = $find->fetch();
@@ -328,7 +328,7 @@ final class OneDriveSource
                     }
                     $database
                         ->prepare(
-                            "INSERT INTO photos(id,root,path,album,name,modified,bytes,width,height,taken,seen,manual_tags,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            "INSERT INTO photos(id,root,path,album,name,modified,bytes,width,height,taken,seen,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(id) DO UPDATE SET root=excluded.root,name=excluded.name,album=excluded.album,seen=excluded.seen,available=1,priority=excluded.priority,
                         modified=excluded.modified,bytes=excluded.bytes,taken=excluded.taken,width=excluded.width,height=excluded.height"
                         )
@@ -344,7 +344,6 @@ final class OneDriveSource
                             (int) ($dimensions['height'] ?? 0),
                             $taken,
                             $seen,
-                            $saved['manual_tags'] ?? null,
                             $priority
                         ]);
                     if ($changed) {

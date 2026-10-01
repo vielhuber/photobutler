@@ -36,7 +36,7 @@ try {
     }
     if (isset($options['regroup-faces'])) {
         $count = $library->faces->regroup();
-        echo "$count doppelte Personengruppen zusammengeführt. Keine Fotos oder KI-Tags neu verarbeitet.\n";
+        echo "$count doppelte Personengruppen zusammengeführt. Keine Fotos neu analysiert und keine KI-Bewertungen geändert.\n";
         exit(0);
     }
     $job = match (true) {

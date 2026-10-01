@@ -12,8 +12,8 @@ final class JobRunner
     public const LABELS = [
         'scan' => 'Galerie einlesen',
         'previews' => 'Thumbnails downloaden',
-        'tag' => 'KI-Tagging',
-        'faces' => 'Gesichtertagging'
+        'faces' => 'Gesichtertagging',
+        'tag' => 'KI-Bewertung'
     ];
 
     /**
@@ -138,18 +138,18 @@ final class JobRunner
                         ')';
             $due =
                 $job === 'tag'
-                    ? "p.status = 'pending' OR (p.status = 'error' AND p.attempted < :retry)"
+                    ? "p.priority = 0 AND (p.status = 'pending' OR (p.status = 'error' AND p.attempted < :retry))"
                     : FaceStore::DUE;
             $error =
                 $job === 'tag'
-                    ? "p.status = 'error'"
+                    ? "p.priority = 0 AND p.status = 'error'"
                     : "s.status = 'error' AND s.modified = p.modified AND s.bytes = p.bytes AND s.model = :model";
             $statement = $this->library->database->prepare(
                 "SELECT COUNT(*) AS total,
                 COALESCE(SUM($done), 0) AS completed, COALESCE(SUM($error), 0) AS errors,
                 COALESCE(SUM($due), 0) AS queued
                 FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1" .
-                    ($job === 'faces' ? ' AND p.priority <> -1' : '')
+                    ($job === 'faces' ? ' AND p.priority <> -1' : " AND (p.priority = 0 OR p.status = 'done')")
             );
             $parameters = [':retry' => time() - 3600];
             if ($job === 'faces') {
@@ -374,8 +374,8 @@ final class JobRunner
             }
             $database->exec('BEGIN IMMEDIATE');
             if ($job === 'scan') {
-                $database->exec('INSERT OR REPLACE INTO photo_metadata (id, path, modified, bytes, manual_tags, priority)
-                    SELECT id, path, modified, bytes, manual_tags, priority FROM photos;
+                $database->exec('INSERT OR REPLACE INTO photo_metadata (id, path, modified, bytes, priority)
+                    SELECT id, path, modified, bytes, priority FROM photos;
                     DELETE FROM photos; DELETE FROM scan_state;');
             }
             if ($job === 'previews') {
@@ -391,9 +391,7 @@ final class JobRunner
                 }
             }
             if ($job === 'tag') {
-                $database->exec(
-                    "UPDATE photos SET ai_tags = '[]', description = '', status = 'pending', attempted = 0"
-                );
+                $database->exec(PhotoButler::RATING_RESET);
             }
             if ($job === 'faces') {
                 $database->exec("DELETE FROM faces WHERE origin = 'auto';

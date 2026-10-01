@@ -85,7 +85,7 @@ final class OnDemandTest extends TestCase
                 return;
             }
             file_put_contents(__DIR__ . '/payload.json', file_get_contents('php://input'));
-            echo json_encode(['id' => 'fixture', 'model' => 'fixture', 'choices' => [['message' => ['role' => 'assistant', 'content' => '{"description":"Fixture","tags":["Fixture"]}'], 'finish_reason' => 'stop']], 'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1, 'total_tokens' => 2]]);
+            echo json_encode(['id' => 'fixture', 'model' => 'fixture', 'choices' => [['message' => ['role' => 'assistant', 'content' => '{"decision":"ausblenden","reason":"Fixture"}'], 'finish_reason' => 'stop']], 'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1, 'total_tokens' => 2]]);
             PHP
         );
         file_put_contents($this->root . '/.data/.env', "\nAI_BASE_URL=http://" . $address . "/v1\n", FILE_APPEND);
@@ -114,7 +114,8 @@ final class OnDemandTest extends TestCase
                 }
             }
             $this->assertSame(['data:image/' . $format . ';base64,' . $encoded], $images);
-            $this->assertSame(['Fixture'], $this->library->photo(1)->tags);
+            $this->assertSame(-1, $this->library->photo(1)->priority);
+            $this->assertSame('Fixture', $this->library->photo(1)->description);
             $this->assertSame(['a'], $this->client->downloads);
         } finally {
             proc_terminate($process);

@@ -477,12 +477,8 @@ final class FaceStoreTest extends TestCase
         $store->correct('split', 2);
         $store->correct('ignore', 1);
         $this->library->database->exec(
-            "UPDATE photos SET ai_tags = '[" .
-                '"KI"' .
-                "]', description = 'Beschreibung',
-            status = 'done', attempted = 123, manual_tags = '[" .
-                '"Manuell"' .
-                "]', priority = 1"
+            "UPDATE photos SET description = 'Begründung', status = 'done', attempted = 123, priority = 1;
+            UPDATE photos SET priority = -1, ai_priority = -1 WHERE id = 2"
         );
         $this->assertSame(4, $this->library->resetAnalysis());
         foreach (['faces', 'face_state', 'persons', 'person_separations'] as $table) {
@@ -492,12 +488,12 @@ final class FaceStoreTest extends TestCase
             );
         }
         $reset = $this->photo(1);
-        $this->assertSame('[]', $reset['ai_tags']);
         $this->assertSame('', $reset['description']);
         $this->assertSame('pending', $reset['status']);
         $this->assertSame(0, $reset['attempted']);
-        $this->assertSame('["Manuell"]', $reset['manual_tags']);
         $this->assertSame(1, $reset['priority']);
+        $this->assertSame(0, $this->photo(2)['priority']);
+        $this->assertNull($this->photo(2)['ai_priority']);
         $this->assertSame([], $this->client->downloads);
         $this->assertSame(4, $this->library->resetAnalysis());
     }
@@ -596,12 +592,8 @@ final class FaceStoreTest extends TestCase
         $store->save($this->photo(1), $this->analysisResult([[1.0], [1.0]]));
         $this->assertCount(1, $store->persons());
         $this->library->favorite(1, true);
-        $this->library->saveTags(1, 'Test');
-        $this->assertCount(
-            1,
-            $this->library->photos(query: '1', album: 'FOTOS', tag: 'Test', favorites: true, person: 1)
-        );
-        $this->assertCount(0, $this->library->photos(tag: 'Andere', person: 1));
+        $this->assertCount(1, $this->library->photos(query: '1', album: 'FOTOS', favorites: true, person: 1));
+        $this->assertCount(0, $this->library->photos(album: 'Andere', person: 1));
         $this->assertCount(0, $this->library->photos(person: 999));
         $this->index($this->photoItems(70));
         foreach ($this->library->database->query('SELECT * FROM photos WHERE id >= 5')->fetchAll() as $photo) {
@@ -616,10 +608,10 @@ final class FaceStoreTest extends TestCase
         $this->assertSame([], array_intersect(array_column($oldest, 'id'), array_column($next, 'id')));
     }
 
-    public function testDeletionCannotBeUndoneByInFlightResultsAndRetryKeepsTags(): void
+    public function testDeletionCannotBeUndoneByInFlightResultsAndRetryKeepsTheRating(): void
     {
         $store = $this->library->faces;
-        $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Test\"]'");
+        $this->library->database->exec("UPDATE photos SET status = 'done', priority = 1, ai_priority = 1");
         $photo = $this->photo(1);
         $store->save($photo, $this->analysisResult([[1.0]]));
         $store->reset(1, true);
@@ -628,7 +620,7 @@ final class FaceStoreTest extends TestCase
         $store->reset(1, false);
         $this->assertTrue($store->save($photo, $this->analysisResult(status: 'error')));
         $this->assertSame('done', $this->library->photo(1)->status);
-        $this->assertSame(['Test'], $this->library->photo(1)->tags);
+        $this->assertSame(1, $this->library->photo(1)->priority);
         $store->reset(1, false);
         $this->assertTrue($store->save($photo, $this->analysisResult()));
         $this->assertSame(
@@ -686,7 +678,7 @@ final class FaceStoreTest extends TestCase
             $this->markTestSkipped('Set PHOTOBUTLER_TEST_FACE_RUNTIME to an installed CPU runtime for real inference.');
         }
         symlink($runtime, $this->root . '/.data/face-runtime');
-        $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Unverändert\"]'");
+        $this->library->database->exec("UPDATE photos SET status = 'done', description = 'Unverändert'");
         $this->library->oneDrive->previews(range(1, 4));
         foreach (range(1, 4) as $id) {
             $this->assertNotNull($this->library->imagePath($id, cachedOnly: true));
@@ -700,7 +692,7 @@ final class FaceStoreTest extends TestCase
                 ->query("SELECT COUNT(*) FROM face_state WHERE status = 'done'")
                 ->fetchColumn()
         );
-        $this->assertSame(['Unverändert'], $this->library->photo(1)->tags);
+        $this->assertSame('Unverändert', $this->library->photo(1)->description);
         $this->assertSame(['1', '2', '3', '4'], $this->client->downloads);
         $this->index($this->photoItems(5));
         $this->library->database->exec("UPDATE photos SET status = 'done'");

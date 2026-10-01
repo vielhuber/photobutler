@@ -132,7 +132,6 @@ final class OneDriveTest extends TestCase
     {
         $this->index([$this->item('a'), $this->item('b', 'second.jpg')]);
         $this->library->priority(1, 1);
-        $this->library->saveTags(1, 'manual');
         $paths = $this->library->database->query('SELECT path FROM photos ORDER BY id')->fetchAll(PDO::FETCH_COLUMN);
         foreach ($paths as $path) {
             file_put_contents($this->root . '/.data/thumbnails/' . hash('sha256', $path) . '.jpg', $this->client->jpeg);
@@ -145,7 +144,7 @@ final class OneDriveTest extends TestCase
         $this->index([$this->item('a', 'renamed.jpg', version: 'v2')]);
         $this->assertNull($this->library->imagePath(1, cachedOnly: true));
         $this->assertNotNull($this->library->imagePath(2, cachedOnly: true));
-        $this->assertSame(['manual'], $this->library->photo(1)->tags);
+        $this->assertSame(1, $this->library->photo(1)->priority);
     }
 
     public function testMissingSourceAndInterruptedEnumerationNeverHideExistingPhotos(): void
@@ -242,12 +241,10 @@ final class OneDriveTest extends TestCase
     {
         $this->index([$this->item('a')]);
         $this->library->priority(1, 1);
-        $this->library->saveTags(1, 'manual');
         $this->library->jobs->reset('scan');
         $this->assertSame(0, $this->library->photoCount());
         $this->index([]);
         $this->assertSame(1, $this->library->photo(1)->priority);
-        $this->assertSame(['manual'], $this->library->photo(1)->tags);
     }
 
     public function testMigrationPreservesLocalIdsCachesAndMetadataWithoutAccessingOldMount(): void
@@ -259,7 +256,6 @@ final class OneDriveTest extends TestCase
             )
             ->execute([$this->root . '/legacy', $this->root . '/legacy/photo.jpg']);
         $this->library->priority(1, 1);
-        $this->library->saveTags(1, 'retained');
         $thumbnail = $this->root . '/.data/thumbnails/' . hash('sha256', $this->root . '/legacy/photo.jpg') . '.jpg';
         file_put_contents($thumbnail, $this->client->jpeg);
         $configuration = file_get_contents($this->root . '/.data/.env');
@@ -271,7 +267,6 @@ final class OneDriveTest extends TestCase
         $this->index([$this->item('a')]);
         $this->assertSame(1, $this->library->photoCount());
         $this->assertSame(1, $this->library->photo(1)->priority);
-        $this->assertSame(['retained'], $this->library->photo(1)->tags);
         $this->assertSame($thumbnail, $this->library->imagePath(1, cachedOnly: true));
         $this->assertSame([], $this->client->downloads);
         $this->index([['id' => 'a', 'deleted' => []], $this->item('b')]);

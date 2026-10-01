@@ -245,7 +245,7 @@ final class PhotoButlerTest extends TestCase
         $this->queue([$this->folder('urlaub', 'Urlaub'), $this->item('meer', 'Meer.jpg', 'urlaub')]);
         $jobs = $this->library->jobs;
         foreach (
-            ['scan' => 'Galerieabschnitt', 'tag' => 'KI-Verschlagwortung', 'faces' => 'analysiere Gesichter']
+            ['scan' => 'Galerieabschnitt', 'tag' => 'KI-Bewertung', 'faces' => 'analysiere Gesichter']
             as $job => $phase
         ) {
             $run = $jobs->start($job);
@@ -738,7 +738,7 @@ final class PhotoButlerTest extends TestCase
         $report = $this->library->jobs->cron();
         $this->assertStringContainsString("Galerie einlesen: done · 100 % · 0 Fehler\n", $report);
         $this->assertStringContainsString("Thumbnails downloaden: done · 100 % · 0 Fehler\n", $report);
-        $this->assertStringContainsString("KI-Tagging: übersprungen (KI nicht konfiguriert)\n", $report);
+        $this->assertStringContainsString("KI-Bewertung: übersprungen (KI nicht konfiguriert)\n", $report);
         $this->assertStringContainsString(
             "Gesichtertagging: übersprungen (Gesichtserkennung nicht installiert)\n",
             $report
@@ -798,15 +798,13 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(24, $this->library->photoCount(relevance: 'unrated'));
         $this->assertSame(24, $this->library->photoCount(relevance: 'relevant'));
         $this->assertSame(23, $this->library->photoCount(relevance: 'excluded'));
-        $this->assertSame(35, $this->library->photoCount(album: 'Even', tag: 'Test'));
+        $this->assertSame(35, $this->library->photoCount(album: 'Even'));
         $this->assertSame(0, $this->library->photoCount(relevance: 'relevant', favorites: 'none'));
         foreach (['all', 'unrated', 'relevant', 'excluded'] as $relevance) {
             foreach ([false, true, 'none'] as $favorites) {
                 $this->assertSame(
-                    count(
-                        $this->library->photos(album: 'Even', tag: 'Test', favorites: $favorites, relevance: $relevance)
-                    ),
-                    $this->library->photoCount(album: 'Even', tag: 'Test', favorites: $favorites, relevance: $relevance)
+                    count($this->library->photos(album: 'Even', favorites: $favorites, relevance: $relevance)),
+                    $this->library->photoCount(album: 'Even', favorites: $favorites, relevance: $relevance)
                 );
             }
         }
@@ -842,16 +840,13 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
     }
 
-    public function testSearchTagsAndFavorites(): void
+    public function testSearchAndFavorites(): void
     {
         $this->indexMeer();
         $id = $this->library->photos()[0]->id;
-        $this->library->saveTags($id, ' Küste, Meer, Meer ');
         $this->library->favorite($id, true);
-        $this->assertCount(1, $this->library->photos(query: 'KÜSTE', favorites: true));
-        $this->assertCount(1, $this->library->photos(tag: 'Meer'));
+        $this->assertCount(1, $this->library->photos(query: 'MEER', favorites: true));
         $this->assertCount(0, $this->library->photos(query: '%'));
-        $this->assertSame(['Küste', 'Meer'], $this->library->photo($id)->tags);
     }
 
     public function testGalleryOnlyLinksToJobsAndOffersInfiniteLoading(): void
@@ -1025,12 +1020,12 @@ final class PhotoButlerTest extends TestCase
                 VALUES ('/photos', ?, 'Urlaub', 'Meer.jpg', 1, 1, 0, 0, '2026-01-01', 'test', '[\"Meer\"]', 1)");
             $statement->execute(['/photos/' . $number . '.jpg']);
         }
-        $first = $this->library->photos(query: 'Meer', album: 'Urlaub', tag: 'Meer', favorites: true);
-        $second = $this->library->photos(query: 'Meer', album: 'Urlaub', tag: 'Meer', favorites: true, page: 2);
+        $first = $this->library->photos(query: 'Meer', album: 'Urlaub', favorites: true);
+        $second = $this->library->photos(query: 'Meer', album: 'Urlaub', favorites: true, page: 2);
         $this->assertCount(60, $first);
         $this->assertCount(4, $second);
         $this->assertSame([], array_intersect(array_column($first, 'id'), array_column($second, 'id')));
-        $this->assertSame([], $this->library->photos(tag: 'Meer', favorites: true, page: 3));
+        $this->assertSame([], $this->library->photos(favorites: true, page: 3));
     }
 
     public function testOffsetPaginationRetainsEveryRemainingPhotoAfterRatings(): void
@@ -1116,8 +1111,8 @@ final class PhotoButlerTest extends TestCase
         for ($number = 0; $number < 65; $number++) {
             $insert->execute(['/photos/Urlaub/Meer-' . $number . '.jpg', 'Urlaub', 'Meer-' . $number, '2024-01-01']);
         }
-        $first = $this->library->photos(query: 'Meer-', tag: 'Meer', favorites: true, relevance: 'relevant');
-        $second = $this->library->photos(query: 'Meer-', tag: 'Meer', favorites: true, relevance: 'relevant', page: 2);
+        $first = $this->library->photos(query: 'Meer-', favorites: true, relevance: 'relevant');
+        $second = $this->library->photos(query: 'Meer-', favorites: true, relevance: 'relevant', page: 2);
         $this->assertCount(60, $first);
         $this->assertCount(5, $second);
         $this->assertCount(65, array_unique(array_column([...$first, ...$second], 'id')));
@@ -1185,15 +1180,8 @@ final class PhotoButlerTest extends TestCase
                 $comparison = strcmp($first['taken'], $second['taken']) ?: $first['id'] <=> $second['id'];
                 return $sort === 'oldest' ? $comparison : -$comparison;
             });
-            $first = $this->library->photos(query: 'Meer', album: 'Urlaub', tag: 'Meer', favorites: true, sort: $sort);
-            $second = $this->library->photos(
-                query: 'Meer',
-                album: 'Urlaub',
-                tag: 'Meer',
-                favorites: true,
-                page: 2,
-                sort: $sort
-            );
+            $first = $this->library->photos(query: 'Meer', album: 'Urlaub', favorites: true, sort: $sort);
+            $second = $this->library->photos(query: 'Meer', album: 'Urlaub', favorites: true, page: 2, sort: $sort);
             $this->assertCount(60, $first);
             $this->assertCount(5, $second);
             $this->assertSame(array_column($expected, 'id'), array_column([...$first, ...$second], 'id'), $sort);
@@ -1224,29 +1212,28 @@ final class PhotoButlerTest extends TestCase
         $this->assertNull($this->library->imagePath($id));
     }
 
-    public function testKnownItemKeepsAnalysisAndManualTagsWhenOnlyMetadataChanges(): void
+    public function testKnownItemKeepsAnalysisAndRatingWhenOnlyMetadataChanges(): void
     {
         $id = $this->indexMeer();
-        $this->library->saveTags($id, 'Familie');
         $this->library->favorite($id, true);
-        $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Meer\"]'");
+        $this->library->database->exec("UPDATE photos SET status = 'done'");
         $this->index([$this->item('meer', 'Meer.jpg', 'urlaub', modified: '2026-09-02T12:00:00Z')]);
-        $this->assertSame(['Familie'], $this->library->photo($id)->tags);
         $this->assertTrue($this->library->photo($id)->favorite);
         $this->assertSame('done', $this->library->photo($id)->status);
     }
 
-    public function testAiResultRejectsMalformedAndOversizedTags(): void
+    public function testAiResultRejectsUnknownDecisions(): void
     {
         $result = new ReflectionMethod(PhotoButler::class, 'parseAiResponse')->invoke(
             $this->library,
-            '```json' . "\n" . '{"description":"Ein Strand.","tags":["Meer","Meer"," Strand "]}' . "\n```"
+            '```json' . "\n" . '{"decision":"ausblenden","reason":" Meme mit Text "}' . "\n```"
         );
-        $this->assertSame(['Meer', 'Strand'], $result->tags);
+        $this->assertSame(-1, $result->priority);
+        $this->assertSame('Meme mit Text', $result->reason);
         $this->expectException(UnexpectedValueException::class);
         new ReflectionMethod(PhotoButler::class, 'parseAiResponse')->invoke(
             $this->library,
-            '{"description":"x","tags":[{"bad":true}]}'
+            '{"decision":"vielleicht","reason":"x"}'
         );
     }
 
@@ -1264,10 +1251,10 @@ final class PhotoButlerTest extends TestCase
 
     public function testAihelperDecodedJsonResponseIsAccepted(): void
     {
-        $response = json_decode('{"description":"Ein Strand.","tags":["Meer","Strand"]}');
+        $response = json_decode('{"decision":"einblenden","reason":"Familienfoto am Strand"}');
         $result = new ReflectionMethod(PhotoButler::class, 'parseAiResponse')->invoke($this->library, $response);
-        $this->assertSame('Ein Strand.', $result->description);
-        $this->assertSame(['Meer', 'Strand'], $result->tags);
+        $this->assertSame(1, $result->priority);
+        $this->assertSame('Familienfoto am Strand', $result->reason);
     }
 
     public function testPartialEnumerationDoesNotHideExistingPhotos(): void
@@ -1378,16 +1365,16 @@ final class PhotoButlerTest extends TestCase
         $this->assertNull($this->library->imagePath(999, cachedOnly: true));
     }
 
-    public function testMissingThumbnailPreservesAiTagsAndIsRestoredByTheThumbnailJob(): void
+    public function testMissingThumbnailPreservesAiRatingAndIsRestoredByTheThumbnailJob(): void
     {
         $id = $this->indexMeer();
         $this->library->oneDrive->previews([$id]);
         $thumbnail = $this->library->imagePath($id);
-        $this->library->database->exec("UPDATE photos SET status = 'done', ai_tags = '[\"Meer\"]'");
+        $this->library->database->exec("UPDATE photos SET status = 'done', priority = 1, ai_priority = 1");
         unlink($thumbnail);
         $this->index([]);
         $this->assertSame('done', $this->library->photo($id)->status);
-        $this->assertSame(['Meer'], $this->library->photo($id)->tags);
+        $this->assertSame(1, $this->library->photo($id)->priority);
         $this->assertNull($this->library->imagePath($id));
         $this->assertSame(['meer'], $this->client->downloads);
         $run = $this->library->jobs->start('previews');
@@ -1412,16 +1399,22 @@ final class PhotoButlerTest extends TestCase
         $this->assertSame(2, $stats['queued']);
     }
 
-    public function testOversizedManualTagsAreRejectedWithoutReplacingExistingTags(): void
+    public function testAiRatingOnlyRequestsUnratedPhotos(): void
     {
-        $id = $this->indexMeer();
-        $this->library->saveTags($id, 'Meer');
-        try {
-            $this->library->saveTags($id, str_repeat('a', 61));
-            $this->fail('Expected oversized tags to be rejected.');
-        } catch (InvalidArgumentException) {
-            $this->assertSame(['Meer'], $this->library->photo($id)->tags);
-        }
+        file_put_contents(
+            $this->root . '/.data/.env',
+            "AI_PROVIDER=cliproxyapi\nAI_MODEL=test\nAI_BASE_URL=http://127.0.0.1:1\nAI_API_KEY=test-only\n",
+            FILE_APPEND
+        );
+        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
+        $this->index([$this->item('a', 'Meer.jpg'), $this->item('b', 'Zweiter.jpg')]);
+        $this->library->oneDrive->previews([1, 2]);
+        $this->library->priority(1, -1);
+        $this->assertSame(0, $this->library->tag(limit: 5));
+        $this->assertSame('pending', $this->library->photo(1)->status);
+        $this->assertSame(-1, $this->library->photo(1)->priority);
+        $this->assertSame('error', $this->library->photo(2)->status);
+        $this->assertSame(1, $this->library->jobs->all()['tag']['total']);
     }
 
     public function testInitializerPreservesIndentedCredentials(): void
@@ -1785,7 +1778,7 @@ final class PhotoButlerTest extends TestCase
             $document = \Dom\HTMLDocument::createFromString($body, LIBXML_NOERROR);
             $this->assertSame(4, $document->querySelectorAll('[data-job]')->length);
             $this->assertSame(
-                ['Galerie einlesen', 'Thumbnails downloaden', 'KI-Tagging', 'Gesichtertagging'],
+                ['Galerie einlesen', 'Thumbnails downloaden', 'Gesichtertagging', 'KI-Bewertung'],
                 array_map(
                     fn($heading): string => $heading->textContent,
                     iterator_to_array($document->querySelectorAll('[data-job] h2'))
@@ -1862,7 +1855,6 @@ final class PhotoButlerTest extends TestCase
                     'album',
                     'taken',
                     'description',
-                    'tags',
                     'priority',
                     'favorite',
                     'video',
@@ -1899,15 +1891,9 @@ final class PhotoButlerTest extends TestCase
             }
             $this->assertSame(1, $this->library->photo($id)->priority);
 
-            $this->assertSame(
-                200,
-                $request('', [
-                    'action' => 'tags',
-                    'id' => $id,
-                    'tags' => '<script>alert(1)</script>',
-                    'csrf' => $csrf
-                ])[0]
-            );
+            $this->library->database
+                ->prepare('UPDATE photos SET description = ? WHERE id = ?')
+                ->execute(['<script>alert(1)</script>', $id]);
             $this->assertStringNotContainsString('<script>alert(1)</script>', $request('')[1]);
             file_put_contents(
                 $this->root . '/.data/.env',
@@ -1971,7 +1957,7 @@ final class PhotoButlerTest extends TestCase
             $this->assertStringContainsString('text/plain', $headers['content-type']);
             $this->assertStringContainsString("Galerie einlesen: OneDrive erneut anmelden: --onedrive-login.\n", $body);
             $this->assertStringContainsString("Thumbnails downloaden: done · 100 % · 0 Fehler\n", $body);
-            $this->assertStringContainsString("KI-Tagging: übersprungen (KI nicht konfiguriert)\n", $body);
+            $this->assertStringContainsString("KI-Bewertung: übersprungen (KI nicht konfiguriert)\n", $body);
             $this->assertStringContainsString(
                 "Gesichtertagging: übersprungen (Gesichtserkennung nicht installiert)\n",
                 $body

@@ -14,10 +14,8 @@ final class JobResetTest extends TestCase
         $this->index([$this->item('b', 'b.jpg'), $this->item('c', 'c.jpg')]);
         $this->library->oneDrive->previews([1, 2]);
         $this->library->favorite(1, true);
-        $this->library->saveTags(1, 'Manuell');
-        $this->library->saveTags(2, '');
-        $this->library->database
-            ->exec("UPDATE photos SET status = 'done', ai_tags = '[\"KI\"]', description = 'KI', attempted = 42;
+        $this->library->database->exec("UPDATE photos SET status = 'done', description = 'KI', attempted = 42;
+            UPDATE photos SET priority = -1, ai_priority = -1 WHERE id = 2;
             INSERT INTO persons (id, name, auto_match, title_face) VALUES (1, 'Manuell', 0, 1), (2, '', 1, 2), (3, '', 0, NULL);
             INSERT INTO person_separations VALUES (1, 3);
             INSERT INTO faces (id, photo_id, person_id, modified, bytes, model, box, embedding, crop, origin)
@@ -62,28 +60,16 @@ final class JobResetTest extends TestCase
         } while ($run['status'] === 'running');
         self::assertSame('done', $run['status']);
         self::assertTrue($this->library->photo(1)->favorite);
-        self::assertSame(
-            '["Manuell"]',
-            $this->library->database->query('SELECT manual_tags FROM photos WHERE id = 1')->fetchColumn()
-        );
-        self::assertSame(
-            '[]',
-            $this->library->database->query('SELECT manual_tags FROM photos WHERE id = 2')->fetchColumn()
-        );
+        self::assertSame(-1, $this->library->photo(2)->priority);
         self::assertSame('a.jpg', $this->library->photo(3)->name);
         self::assertSame($thumbnail, $this->library->imagePath(1, cachedOnly: true));
         self::assertSame($cached, file_get_contents($thumbnail));
         self::assertSame(['b', 'c'], $this->client->downloads);
         self::assertSame(2, $this->library->database->query('SELECT COUNT(*) FROM faces')->fetchColumn());
         $this->library->favorite(1, false);
-        $this->library->saveTags(1, 'Korrigiert');
         $this->library->jobs->reset('scan');
         $this->index([]);
         self::assertFalse($this->library->photo(1)->favorite);
-        self::assertSame(
-            '["Korrigiert"]',
-            $this->library->database->query('SELECT manual_tags FROM photos WHERE id = 1')->fetchColumn()
-        );
     }
 
     public function testEachResetClearsOnlyItsDataAndInvalidatesItsRun(): void
@@ -111,10 +97,6 @@ final class JobResetTest extends TestCase
             $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
             self::assertSame('idle', $this->library->jobs->all()[$job]['status']);
             self::assertTrue($this->library->photo(1)->favorite);
-            self::assertSame(
-                '["Manuell"]',
-                $this->library->database->query('SELECT manual_tags FROM photos WHERE id = 1')->fetchColumn()
-            );
             self::assertSame(['b', 'c'], $this->client->downloads);
             if ($job === 'previews') {
                 self::assertFileDoesNotExist($thumbnail);
@@ -130,10 +112,11 @@ final class JobResetTest extends TestCase
                     2,
                     $this->library->database
                         ->query(
-                            "SELECT COUNT(*) FROM photos WHERE ai_tags = '[]' AND description = '' AND attempted = 0 AND status = 'pending'"
+                            "SELECT COUNT(*) FROM photos WHERE ai_priority IS NULL AND description = '' AND attempted = 0 AND status = 'pending'"
                         )
                         ->fetchColumn()
                 );
+                self::assertSame(0, $this->library->photo(2)->priority);
                 self::assertSame(2, $this->library->database->query('SELECT COUNT(*) FROM faces')->fetchColumn());
             }
         }
@@ -146,6 +129,14 @@ final class JobResetTest extends TestCase
         self::assertSame(1, $this->library->database->query('SELECT COUNT(*) FROM person_separations')->fetchColumn());
     }
 
+    public function testRatingResetKeepsRatingsTheUserChanged(): void
+    {
+        $this->library->priority(2, 1);
+        $this->library->jobs->reset('tag');
+        self::assertSame(1, $this->library->photo(2)->priority);
+        self::assertTrue($this->library->photo(1)->favorite);
+    }
+
     public function testTemporarilyMissingPhotosKeepTheirMetadataAndStickerOriginalsSurviveAllResets(): void
     {
         $sticker = ['file' => ['mimeType' => 'image/webp']] + $this->item('sticker', 'sticker.webp');
@@ -156,10 +147,6 @@ final class JobResetTest extends TestCase
         $this->library->jobs->reset('scan');
         $this->index([$this->item('b', 'b.jpg')]);
         self::assertTrue($this->library->photo(1)->favorite);
-        self::assertSame(
-            '["Manuell"]',
-            $this->library->database->query('SELECT manual_tags FROM photos WHERE id = 1')->fetchColumn()
-        );
         foreach (['previews', 'tag', 'faces'] as $job) {
             $this->library->jobs->reset($job);
         }

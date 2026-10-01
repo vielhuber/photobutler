@@ -108,7 +108,6 @@ export function initializeGallery(navigatePage) {
     let $date = document.querySelector('#viewer-date');
     let $description = document.querySelector('#viewer-description');
     let $favorite = document.querySelector('#viewer-favorite');
-    let $tags = document.querySelector('#viewer-tags');
     let $message = document.querySelector('#viewer-message');
     let $persons = document.querySelector('#viewer-persons');
     let $faces = document.querySelector('#viewer-faces');
@@ -222,7 +221,6 @@ export function initializeGallery(navigatePage) {
         $title.textContent = 'Lädt …';
         $description.textContent = '';
         $date.textContent = '';
-        $tags.value = '';
         $persons.replaceChildren();
         $faces.replaceChildren();
         $favorite.disabled = true;
@@ -262,9 +260,8 @@ export function initializeGallery(navigatePage) {
                 photo.album,
                 ...(photo.width > 0 && photo.height > 0 ? [`${photo.width} × ${photo.height}`] : [])
             ].join(' · ');
-            $description.textContent = photo.description;
+            $description.textContent = photo.description ? `KI-Bewertung: ${photo.description}` : '';
             $image.alt = photo.description || photo.name;
-            $tags.value = photo.tags.join(', ');
             $favorite.textContent = photo.favorite ? '♥ Favorit entfernen' : '♡ Als Favorit';
             $favorite.disabled = false;
             $download.href = `?photo=${photo.id}&size=original&download=1`;
@@ -381,7 +378,7 @@ export function initializeGallery(navigatePage) {
             await openPhoto(id, false);
             $message.textContent = erase
                 ? 'Gesichtsdaten gelöscht; automatische Analyse ausgesetzt.'
-                : 'Gesichtsanalyse vorgemerkt. KI-Tags bleiben erhalten.';
+                : 'Gesichtsanalyse vorgemerkt. Bewertung bleibt erhalten.';
         } catch (error) {
             $message.textContent = error.message;
         }
@@ -440,7 +437,6 @@ export function initializeGallery(navigatePage) {
         body.set('csrf', csrf);
         body.set('action', action);
         body.set('id', photo.id);
-        body.set('tags', $tags.value);
         body.set('favorite', photo.favorite ? '0' : '1');
         if (action === 'priority') body.set('priority', String(priority));
         $favorite.disabled = true;
@@ -459,7 +455,7 @@ export function initializeGallery(navigatePage) {
         try {
             let response = await fetch('./', { method: 'POST', body, signal: lifecycle.signal });
             if (!response.ok || !response.headers.get('content-type')?.includes('application/json'))
-                throw new Error('Speichern fehlgeschlagen. Sitzung und Tags prüfen (maximal 20 Tags, je 60 Zeichen).');
+                throw new Error('Speichern fehlgeschlagen. Sitzung prüfen.');
             let updated = await response.json();
             if (rating) {
                 renderPriority(photo.id, updated.priority);
@@ -467,7 +463,6 @@ export function initializeGallery(navigatePage) {
             if (currentPhoto?.id !== updated.id) return;
             currentPhoto = updated;
             $favorite.textContent = updated.favorite ? '♥ Favorit entfernen' : '♡ Als Favorit';
-            $tags.value = updated.tags.join(', ');
             $message.textContent = 'Gespeichert.';
         } catch (error) {
             if (rating) {
@@ -643,10 +638,6 @@ export function initializeGallery(navigatePage) {
         }
     });
     $favorite.addEventListener('click', () => savePhoto('favorite'));
-    document.querySelector('#tag-form').addEventListener('submit', event => {
-        event.preventDefault();
-        savePhoto('tags');
-    });
 
     return {
         syncPhoto() {

@@ -68,20 +68,6 @@ $jobsView ??= false;
             require __DIR__ . '/persons.php';
         } ?>
         <div<?= $peopleView || $jobsView ? ' hidden' : '' ?>>
-        <?php if ($tags !== []): ?><nav class="tags" aria-label="Schlagwörter"><?php foreach (
-    $tags
-    as $item
-): ?><a class="chip <?= $tag === $item['name'] ? 'selected' : '' ?>" href="?<?= $escape(
-    http_build_query([
-        'person' => $person,
-        'tag' => $item['name'],
-        'album' => $album,
-        'favorites' => $favorites,
-        'sort' => $sort,
-        'relevance' => $relevance,
-        'seed' => $sort === 'random' ? $seed : ''
-    ])
-) ?>"><?= $escape($item['name']) ?></a><?php endforeach; ?></nav><?php endif; ?>
         <div class="gallery-filters"><label class="person-filter"><select id="gallery-relevance" aria-label="Relevanz"><option value="all"<?= $relevance ===
         'all'
             ? ' selected'
@@ -127,7 +113,6 @@ $jobsView ??= false;
                 $person > 0 ||
                 $album !== '' ||
                 $favorites !== '0' ||
-                $tag !== '' ||
                 $relevance !== 'all' ||
                 $from !== '' ||
                 $to !== ''
@@ -171,6 +156,6 @@ $jobsView ??= false;
         </section>
         </div>
     </main>
-    <dialog id="viewer" data-selected-photo="<?= $selectedPhoto ?>" aria-labelledby="viewer-title"><div class="viewer-layout"><div class="viewer-stage" data-preview-state="loading" aria-busy="true"><button class="viewer-close" type="button" aria-label="Bildansicht schließen">×</button><button id="slideshow-stop" type="button" hidden>Slideshow stoppen</button><button class="viewer-previous" type="button" aria-label="Vorheriges Foto">‹</button><img id="viewer-image" alt=""><div id="viewer-faces" class="viewer-faces"></div><button class="viewer-next" type="button" aria-label="Nächstes Foto">›</button></div><section class="viewer-info"><h2 id="viewer-title"></h2><p id="viewer-date" class="muted"></p><p id="viewer-description"></p><button id="viewer-favorite" class="chip" type="button">♡ Als Favorit</button><div id="viewer-persons" class="viewer-persons" aria-label="Erkannte Gesichter"></div><form id="tag-form"><label for="viewer-tags">Schlagwörter</label><textarea id="viewer-tags" rows="4" placeholder="Tags mit Komma trennen"></textarea><small class="muted">Eigene Tags ersetzen KI-Tags.</small><button class="primary" type="submit">Tags speichern</button></form><a id="viewer-download" class="download" href="./">Original herunterladen ↗</a><button id="face-retry" class="chip" type="button">Gesichter erneut prüfen</button><button id="face-erase" class="chip" type="button">Gesichtsdaten löschen …</button><p id="viewer-message" role="status"></p></section></div></dialog>
+    <dialog id="viewer" data-selected-photo="<?= $selectedPhoto ?>" aria-labelledby="viewer-title"><div class="viewer-layout"><div class="viewer-stage" data-preview-state="loading" aria-busy="true"><button class="viewer-close" type="button" aria-label="Bildansicht schließen">×</button><button id="slideshow-stop" type="button" hidden>Slideshow stoppen</button><button class="viewer-previous" type="button" aria-label="Vorheriges Foto">‹</button><img id="viewer-image" alt=""><div id="viewer-faces" class="viewer-faces"></div><button class="viewer-next" type="button" aria-label="Nächstes Foto">›</button></div><section class="viewer-info"><h2 id="viewer-title"></h2><p id="viewer-date" class="muted"></p><p id="viewer-description"></p><button id="viewer-favorite" class="chip" type="button">♡ Als Favorit</button><div id="viewer-persons" class="viewer-persons" aria-label="Erkannte Gesichter"></div><a id="viewer-download" class="download" href="./">Original herunterladen ↗</a><button id="face-retry" class="chip" type="button">Gesichter erneut prüfen</button><button id="face-erase" class="chip" type="button">Gesichtsdaten löschen …</button><p id="viewer-message" role="status"></p></section></div></dialog>
 </body>
 </html>
