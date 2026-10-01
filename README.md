@@ -12,52 +12,103 @@ self-hosted photo albums with sqlite, favorites, relevance filters and an automa
 
 ## installation
 
-requires php 8.5+, composer and the extensions `pdo_sqlite`, `gd`, `mbstring`, `curl`, `fileinfo`. no node.js, npm, ffmpeg, background service or root access is needed at runtime. optional local face recognition additionally needs python 3.12 with pip (see below).
+photobutler is pure php. it needs php 8.5+, composer and the extensions `pdo_sqlite`, `gd`, `mbstring`, `curl`, `fileinfo`; `proc_open` must be allowed. no node.js, npm, ffmpeg, background service or root access is needed. the optional local face recognition additionally needs python 3.12 with pip on linux x86_64 (no virtualenv).
+
+the following steps describe the complete setup as a git checkout on shared hosting. they were verified on 2026-09-30/10-01 on an all-inkl account (php 8.5.9 cli and fpm, python 3.12.3 with pip 24, no node.js): `proc_open` works for the web process, requests of 130 seconds complete, and face inference runs from both ssh and php-fpm. replace `<account>` (all-inkl: `w0…`) and `<domain>` with your values.
+
+### 1. domain
+
+in the hosting panel (all-inkl: KAS), create a (sub)domain whose document root is `/photobutler/public/`, select php 8.5 and enable an ssl certificate with https redirect. only `public/` is served; code, `vendor/` and private data stay outside the document root.
+
+### 2. code
 
 ```bash
-mkdir photobutler && cd photobutler
-composer require vielhuber/photobutler
-./vendor/bin/photobutler-init
+cd /www/htdocs/<account>
+git clone https://github.com/vielhuber/photobutler.git
+cd photobutler
+composer install --no-dev
+php bin/photobutler-init
 ```
 
-## configuration
+`photobutler-init` creates the private `.data/` directory (owner-only permissions), copies `.env.example` to `.data/.env` and generates `JWT_SECRET` and `CRON_SECRET`. use `composer install` without `--no-dev` if you also want to run the tests on the server. alternatively install as a dependency with `composer require vielhuber/photobutler && ./vendor/bin/photobutler-init`; then call the scripts below via `vendor/bin/…` and `vendor/vielhuber/photobutler/scripts/…`.
 
-edit `.data/.env` (see [.env.example](.env.example)):
+### 3. microsoft entra app (OneDrive access)
 
-- `ONEDRIVE_CLIENT_ID`, `ONEDRIVE_TENANT`, `ONEDRIVE_FOLDER`: the API connection described below; no filesystem mount is required.
-- `ONEDRIVE_LEGACY_ROOT`: optionally map a catalog created by an older local-folder installation to the cloud folder without losing IDs or metadata.
-- `AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`, `AI_API_KEY`: your ai connection with an image-capable model. the template uses `cliproxyapi` and the fast `claude-haiku-4-5-20251001`; set your gateway url and key and confirm the model is available there.
-- `AUTH_USERNAME`, `AUTH_PASSWORD`: login credentials. `JWT_SECRET` is generated automatically.
-- `CRON_SECRET`: token for the cron url (see [cron](#cron)); generated automatically, at least 32 characters.
+1. [register an application](https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade) (no redirect uri, no client secret). choose the supported account type that matches the OneDrive holding your photos:
+    - **OneDrive for Business** (microsoft 365 work/school account): "accounts in this organizational directory only". later set `ONEDRIVE_TENANT` to the **directory (tenant) id**.
+    - **personal OneDrive** (onedrive.live.com): "personal microsoft accounts only" (or organizational and personal). later set `ONEDRIVE_TENANT=consumers`.
+2. **authentication → advanced settings → allow public client flows → yes → save** (the login uses the device code flow).
+3. **api permissions → add a permission → microsoft graph → delegated → `Files.Read`**. no write permission is needed. for business tenants that require it, click **grant admin consent**.
+4. note the **application (client) id** (not the object id) and, for business, the **directory (tenant) id**.
 
-serve `public/` over https and route `/index.php/login` to `public/index.php`. the web user needs write access to private `.data/`; cloud originals require no filesystem mount.
+### 4. configuration
 
-## deployment on shared hosting (all-inkl)
+edit `.data/.env` (for example with `vim .data/.env`; see [.env.example](.env.example)):
 
-verified on 2026-09-30 on an all-inkl account (php 8.5.9 cli and fpm, python 3.12.3 with pip 24, no node.js): all required extensions are available, `proc_open` is allowed for the web process, requests of 130 seconds complete, and face inference runs from both ssh and php-fpm.
+- `ONEDRIVE_CLIENT_ID`: application (client) id from step 3.
+- `ONEDRIVE_TENANT`: directory (tenant) id for OneDrive for Business, `consumers` for a personal OneDrive.
+- `ONEDRIVE_FOLDER`: your photo folder relative to the drive root, for example `FOTOS`. shared-folder shortcuts are rejected.
+- `ONEDRIVE_LEGACY_ROOT`: optional; maps a catalog created by an older local-folder installation to the cloud folder without losing ids or metadata. leave empty for new installations.
+- `AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`, `AI_API_KEY`: your ai connection with an image-capable model. the template uses `cliproxyapi` and the fast `claude-haiku-4-5-20251001`; the gateway must be reachable from the server over the internet. only needed for the ai rating.
+- `AUTH_USERNAME`, `AUTH_PASSWORD`: login credentials for the gallery.
+- `JWT_SECRET`, `CRON_SECRET`: generated by `photobutler-init`; `CRON_SECRET` needs at least 32 characters.
 
-1. in the KAS, create a (sub)domain with the document root `/photobutler/public`, select php 8.5, and enable an ssl certificate with https redirect.
-2. connect via ssh and install into the account's web space next to (not inside) other document roots:
+values with special characters belong in single quotes. the web server needs write access to `.data/`.
 
-    ```bash
-    cd /www/htdocs/<account>
-    mkdir photobutler && cd photobutler
-    composer require vielhuber/photobutler
-    ./vendor/bin/photobutler-init
-    ```
+### 5. connect OneDrive
 
-3. edit `.data/.env` (for example with `vim .data/.env`): OneDrive, ai and login settings. `.data/` stays outside the document root; `photobutler-init` creates it with owner-only permissions.
-4. connect OneDrive as described in [OneDrive API setup](#onedrive-api-setup) with `php vendor/bin/photobutler-index --onedrive-login`.
-5. optional: install the face runtime with `python3.12 vendor/vielhuber/photobutler/scripts/setup-faces.py "$PWD/.data"` (about 230 MB in `.data/face-runtime`).
-6. in the KAS, add a cronjob that calls `https://<your-domain>/?cron=<CRON_SECRET>` (value from `.data/.env`), for example every 15 minutes. the first import and thumbnail download can also be started immediately via ssh with `php vendor/bin/photobutler-index --scan-only` and `--previews-only`; cron and ssh runs never overlap.
+```bash
+php bin/photobutler-index --onedrive-login
+```
 
-updates:
+open the displayed microsoft url in any browser, enter the code, sign in with the account that owns the OneDrive and approve read access. keep the terminal open until **OneDrive verbunden** appears. tokens are stored in `.data/onedrive-token.json`, the selected folder in `.data/onedrive-source.json`. repeat this command if consent expires or is revoked.
+
+### 6. face recognition runtime (optional)
+
+```bash
+python3.12 scripts/setup-faces.py
+```
+
+installs the pinned opencv/numpy packages into `.data/face-runtime/packages` and the verified models into `.data/face-runtime/models` (about 260 MB). no photo is processed. see [local face recognition](#local-face-recognition).
+
+### 7. first run
+
+run the jobs once via ssh in this order; each command can be interrupted with ctrl+c and resumed with the same command:
+
+```bash
+php bin/photobutler-index --scan-only      # 1. galerie einlesen: metadata only, no downloads
+php bin/photobutler-index --previews-only  # 2. thumbnails downloaden: OneDrive previews into .data/thumbnails
+php bin/photobutler-index --faces-only     # 3. gesichtertagging: local cpu, no ai provider
+php bin/photobutler-index --tag-only       # 4. ki-bewertung: sends previews to the ai provider
+```
+
+reference values from the verified installation: 96,451 photos (286 GB in OneDrive, 325,712 metadata entries for the whole drive) produced 5.3 GB of thumbnails and a 665 MB database; face recognition took about 0.4 seconds per photo (about 10 hours for all photos). originals are never copied to the server. instead of running everything via ssh you can leave it to the cron url (step 8); console and cron runs never overlap. long runs survive a closed ssh session when detached, for example `nohup php bin/photobutler-index --faces-only > .data/faces.log 2>&1 &`; follow the progress with `tail -f .data/faces.log` or on the jobs page.
+
+### 8. cron
+
+add a cronjob in the hosting panel (all-inkl: KAS → cronjobs) that requests `https://<domain>/?cron=<CRON_SECRET>`, for example every 15 minutes. get the value with `grep CRON_SECRET .data/.env`. details in [cron](#cron).
+
+### 9. check
+
+open `https://<domain>/`, sign in and open **Jobs**: every job shows its status, progress and errors. the default gallery view shows favorites only; choose **Alle anzeigen** to see every photo.
+
+### updates
 
 ```bash
 cd /www/htdocs/<account>/photobutler
-composer update vielhuber/photobutler
-./vendor/bin/photobutler-init
+git pull
+composer install --no-dev
+php bin/photobutler-init
 ```
+
+`photobutler-init` adds missing secrets such as `CRON_SECRET` and never overwrites existing settings. for composer installations use `composer update vielhuber/photobutler && ./vendor/bin/photobutler-init`.
+
+### troubleshooting
+
+- **"OneDrive-Anmeldung nicht verfügbar. App-Registrierung prüfen."**: `ONEDRIVE_TENANT` does not match the app's supported account type (microsoft error `AADSTS700016`). use the directory (tenant) id for a single-tenant/business app, `consumers` only if the app allows personal accounts.
+- **"OneDrive-Anfrage fehlgeschlagen (HTTP 410)"** during import: OneDrive expired the incremental checkpoint. the job pauses; run `--scan-only` again to re-read all metadata. thumbnails are not downloaded again.
+- **"OneDrive einrichten: --onedrive-login ausführen."** or **"OneDrive-Konfiguration geändert."**: run step 5 again.
+- **jobs page shows "Pausiert"**: a run was interrupted or reached its time budget; rerun the command or wait for the next cron call.
 
 ## cron
 
@@ -126,10 +177,7 @@ allow at least 120 seconds per request in your webserver and php configuration. 
 
 ### OneDrive API setup
 
-1. [Register an application](https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade) for your account type, open **Authentication → Advanced settings → Allow public client flows → Yes → Save**, and add delegated **Microsoft Graph → Files.Read** (no write permissions or client secret).
-2. Set `ONEDRIVE_CLIENT_ID`, `ONEDRIVE_TENANT=consumers` (personal account; tenant ID for business) and `ONEDRIVE_FOLDER=FOTOS` (your own folder relative to the drive root) in `.data/.env`. Use the **Application (client) ID**, not the Object ID.
-3. Run `php bin/photobutler-index --onedrive-login` and leave the terminal open. Open the displayed Microsoft URL in any browser, enter the displayed code, sign in with the OneDrive account and approve read access. Wait for **OneDrive verbunden** in the terminal; only then is setup complete. For Composer installations, use `php vendor/bin/photobutler-index` instead.
-4. Run `--scan-only`, then `--previews-only`; run `--tag-only` and `--faces-only` independently when needed, or let the [cron url](#cron) do all of it. Reauthorize with `--onedrive-login` if consent expires or is revoked.
+see [installation](#installation), steps 3 to 5.
 
 Tokens stay in private `.data/`, never in Git or the browser. `Files.Read` is account-wide; PhotoButler limits the catalog to the selected folder. Shared-folder shortcuts are rejected. Existing installations may set `ONEDRIVE_LEGACY_ROOT` to the old source root before the first cloud import; no reset is required. Changing the selected cloud source requires a separate installation rather than silently reassigning an existing catalog.
 
@@ -137,14 +185,9 @@ Cloud imports read paginated metadata only and retain a delta checkpoint. Drive/
 
 the AI rating and face recognition read only existing local JPEG or PNG thumbnails. Missing previews never trigger an original download, including in gallery requests. Opening/downloading an original streams it from OneDrive; cached gallery previews and face crops remain local. Keep `.data/` on local Linux storage outside any OneDrive sync folder. Smaller previews can reduce detection of small faces.
 
-## updates
+## migration from older versions
 
-```bash
-composer update vielhuber/photobutler
-./vendor/bin/photobutler-init
-```
-
-`photobutler-init` adds a missing `CRON_SECRET` to existing installations. local-folder sources (`PHOTO_PATHS`), local thumbnail rendering, sticker animation rendering and `photobutler-deduplicate` have been removed; existing catalogs switch to OneDrive via `ONEDRIVE_LEGACY_ROOT` without losing IDs or ratings.
+local-folder sources (`PHOTO_PATHS`), local thumbnail rendering, sticker animation rendering and `photobutler-deduplicate` have been removed; existing catalogs switch to OneDrive via `ONEDRIVE_LEGACY_ROOT` without losing IDs or ratings.
 
 ## local face recognition
 
