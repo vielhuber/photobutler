@@ -166,6 +166,7 @@ final class OneDriveSource
         if (!isset($page['value']) || (!isset($page['@odata.nextLink']) && !isset($page['@odata.deltaLink']))) {
             throw new \RuntimeException('OneDrive-Bestandsaufnahme unvollständig.');
         }
+        $removed = [];
         $database->beginTransaction();
         try {
             $save = $database->prepare('INSERT OR REPLACE INTO onedrive_pending(id,data) VALUES(?,?)');
@@ -366,7 +367,26 @@ final class OneDriveSource
                         ->execute([$id, $itemId, $version, $relative]);
                     $progress->changed++;
                 }
-                $database->prepare('UPDATE photos SET available=0 WHERE seen<>?')->execute([$seen]);
+                // only a complete traversal proves a file was deleted or moved out of the folder
+                $statement = $database->prepare('SELECT path FROM photos WHERE seen<>?');
+                $statement->execute([$seen]);
+                $removed = $statement->fetchAll(\PDO::FETCH_COLUMN);
+                foreach (
+                    [
+                        'DELETE FROM faces WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
+                        'DELETE FROM face_state WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
+                        'DELETE FROM onedrive_photos WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
+                        'DELETE FROM onedrive_preview_fallbacks WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
+                        'DELETE FROM photo_metadata WHERE path IN (SELECT path FROM photos WHERE seen<>?)',
+                        'DELETE FROM photos WHERE seen<>?'
+                    ]
+                    as $query
+                ) {
+                    $database->prepare($query)->execute([$seen]);
+                }
+                $database->exec("DELETE FROM persons WHERE name = '' AND auto_match = 1
+                    AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = persons.id)
+                    AND NOT EXISTS (SELECT 1 FROM person_separations WHERE person_a = persons.id OR person_b = persons.id);");
                 $database->exec(
                     'DELETE FROM onedrive_items; INSERT INTO onedrive_items SELECT * FROM onedrive_pending; DELETE FROM onedrive_pending; DELETE FROM scan_state'
                 );
@@ -375,6 +395,14 @@ final class OneDriveSource
                     ->execute([$page['@odata.deltaLink']]);
             }
             $database->commit();
+            foreach ($removed as $path) {
+                foreach (['.jpg', '.jpg.webp'] as $suffix) {
+                    $cache = $this->dataPath . '/thumbnails/' . hash('sha256', $path) . $suffix;
+                    if (is_file($cache) && !unlink($cache)) {
+                        throw new \RuntimeException('Vorschau einer gelöschten Datei konnte nicht entfernt werden.');
+                    }
+                }
+            }
             return $progress->changed;
         } finally {
             if ($database->inTransaction()) {

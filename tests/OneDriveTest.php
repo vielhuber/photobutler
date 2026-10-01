@@ -164,36 +164,62 @@ final class OneDriveTest extends TestCase
         $this->assertSame([], $this->client->downloads);
     }
 
-    public function testDeletedFolderRemovesDescendantsFromAvailabilityWithoutRemovingMetadata(): void
+    public function testDeletedFolderRemovesItsDescendantsFromTheCatalog(): void
     {
         $this->index([
             ['id' => 'folder', 'name' => 'Other', 'folder' => [], 'parentReference' => ['id' => 'root']],
-            $this->item('a', parent: 'folder')
+            $this->item('a', parent: 'folder'),
+            $this->item('b', 'kept.jpg')
         ]);
         $this->library->priority(1, 1);
         $this->index([['id' => 'folder', 'deleted' => []]]);
         $this->assertNull($this->library->photo(1));
+        $this->assertNotNull($this->library->photo(2));
         $this->assertSame(
-            1,
-            (int) $this->library->database->query('SELECT priority FROM photos WHERE id=1')->fetchColumn()
+            [2],
+            array_map('intval', $this->library->database->query('SELECT id FROM photos')->fetchAll(PDO::FETCH_COLUMN))
         );
     }
 
-    public function testDeletedFileLeavesTheGalleryWithoutDeletingItsMetadata(): void
+    public function testDeletedFileIsRemovedFromCatalogCachesAndFaceData(): void
     {
-        $this->index([$this->item('a', 'deleted.mov')]);
-        $this->library->saveTags(1, 'Keep');
+        $this->index([$this->item('a', 'deleted.mov'), $this->item('b', 'kept.jpg')]);
+        $this->library->priority(1, 1);
+        $this->library->oneDrive->previews([1, 2]);
+        $deleted = $this->library->imagePath(1, cachedOnly: true);
+        $kept = $this->library->imagePath(2, cachedOnly: true);
+        $database = $this->library->database;
+        $database->exec("INSERT INTO photo_metadata (id, path, modified, bytes, priority)
+            SELECT id, path, modified, bytes, priority FROM photos WHERE id = 1;
+            INSERT INTO persons (id, name) VALUES (1, ''), (2, 'Named'), (3, '');
+            INSERT INTO faces (photo_id, person_id, modified, bytes, model, box, embedding, crop)
+            SELECT id, CASE id WHEN 1 THEN 1 ELSE 3 END, modified, bytes, 'fixture', '[]', '[]', '' FROM photos;
+            INSERT INTO faces (photo_id, person_id, modified, bytes, model, box, embedding, crop)
+            SELECT id, 2, modified, bytes, 'fixture', '[]', '[]', '' FROM photos WHERE id = 1;
+            INSERT INTO face_state (photo_id, modified, bytes, model, status) SELECT id, modified, bytes, 'fixture', 'done' FROM photos;");
         $this->index([['id' => 'a', 'deleted' => []]]);
         $this->assertNull($this->library->photo(1));
-        $this->assertSame(0, $this->library->photoCount());
+        $this->assertSame(1, $this->library->photoCount());
+        foreach (['photos', 'onedrive_photos', 'face_state', 'faces'] as $table) {
+            $column = $table === 'photos' ? 'id' : 'photo_id';
+            $this->assertSame(
+                0,
+                (int) $database->query("SELECT COUNT(*) FROM $table WHERE $column = 1")->fetchColumn(),
+                $table
+            );
+        }
+        $this->assertSame(0, (int) $database->query('SELECT COUNT(*) FROM photo_metadata')->fetchColumn());
+        $this->assertFileDoesNotExist($deleted);
+        $this->assertFileExists($kept);
         $this->assertSame(
-            0,
-            (int) $this->library->database->query('SELECT available FROM photos WHERE id=1')->fetchColumn()
+            [[2, 'Named'], [3, '']],
+            array_map(
+                static fn(array $row): array => [(int) $row['id'], $row['name']],
+                $database->query('SELECT id, name FROM persons ORDER BY id')->fetchAll()
+            )
         );
-        $this->assertSame(
-            '["Keep"]',
-            $this->library->database->query('SELECT manual_tags FROM photos WHERE id=1')->fetchColumn()
-        );
+        $this->index([$this->item('a', 'deleted.mov')]);
+        $this->assertSame(0, $this->library->photo(3)->priority);
     }
 
     public function testExpiredDeltaRestartsMetadataOnlyAndPreservesCatalog(): void
