@@ -165,7 +165,7 @@ final class JobRunner
             $due = SimilarPhotos::DUE;
             $statement = $this->library->database->prepare(
                 "SELECT COUNT(*) AS total,
-                COALESCE(SUM($fresh AND s.status IN ('done', 'unsupported', 'hidden')), 0) AS completed,
+                COALESCE(SUM(s.status IN ('done', 'unsupported', 'hidden') AND NOT ($due)), 0) AS completed,
                 COALESCE(SUM($fresh AND s.status = 'error'), 0) AS errors, COALESCE(SUM($due), 0) AS queued
                 FROM photos p LEFT JOIN similar_state s ON s.photo_id = p.id
                 WHERE ($candidate) OR (p.available = 1 AND p.priority = -1 AND p.ai_priority = -1 AND s.status = 'hidden')"
