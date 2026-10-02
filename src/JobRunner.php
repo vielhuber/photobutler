@@ -13,7 +13,8 @@ final class JobRunner
         'scan' => 'Galerie einlesen',
         'previews' => 'Thumbnails downloaden',
         'faces' => 'Gesichtertagging',
-        'tag' => 'KI-Bewertung'
+        'tag' => 'KI-Bewertung',
+        'similar' => 'Ähnliche Fotos'
     ];
 
     /**
@@ -156,6 +157,20 @@ final class JobRunner
                 $parameters[':model'] = FaceStore::MODEL;
             }
             $statement->execute($parameters);
+            $state = array_replace($state, $statement->fetch());
+        }
+        if ($job === 'similar') {
+            $candidate = SimilarPhotos::CANDIDATE;
+            $fresh = SimilarPhotos::FRESH;
+            $due = SimilarPhotos::DUE;
+            $statement = $this->library->database->prepare(
+                "SELECT COUNT(*) AS total,
+                COALESCE(SUM($fresh AND s.status IN ('done', 'unsupported', 'hidden')), 0) AS completed,
+                COALESCE(SUM($fresh AND s.status = 'error'), 0) AS errors, COALESCE(SUM($due), 0) AS queued
+                FROM photos p LEFT JOIN similar_state s ON s.photo_id = p.id
+                WHERE ($candidate) OR (p.available = 1 AND p.priority = -1 AND p.ai_priority = -1 AND s.status = 'hidden')"
+            );
+            $statement->execute([':retry' => time() - 3600]);
             $state = array_replace($state, $statement->fetch());
         }
         if ($job === 'scan' && $state['status'] === 'running') {
@@ -351,8 +366,9 @@ final class JobRunner
                     'thumbnail-1'
                 ],
                 'previews' => ['thumbnail-0', 'thumbnail-1'],
-                'tag' => ['tag'],
-                'faces' => ['faces']
+                'tag' => ['tag', 'similar'],
+                'faces' => ['faces'],
+                'similar' => ['similar']
             };
             $names = [
                 ...array_map(
@@ -392,6 +408,12 @@ final class JobRunner
             }
             if ($job === 'tag') {
                 $database->exec(PhotoButler::RATING_RESET);
+                $database->exec('DELETE FROM similar_state');
+            }
+            if ($job === 'similar') {
+                $database->exec("UPDATE photos SET priority = 1, ai_priority = 1 WHERE priority = -1 AND ai_priority = -1
+                    AND id IN (SELECT photo_id FROM similar_state WHERE status = 'hidden');
+                    DELETE FROM similar_state;");
             }
             if ($job === 'faces') {
                 $database->exec("DELETE FROM faces WHERE origin = 'auto';
@@ -442,13 +464,16 @@ final class JobRunner
             $timingStarted = hrtime(true);
             $processed = 0;
             $database = $this->library->database;
-            if (in_array($job, ['tag', 'faces'], true)) {
+            if (in_array($job, ['tag', 'faces', 'similar'], true)) {
                 $queuedBefore = $state['queued'];
                 if ($job === 'tag') {
                     $this->library->tag(1);
                 }
                 if ($job === 'faces') {
                     $this->library->tagFaces(1);
+                }
+                if ($job === 'similar') {
+                    $this->library->similar->run();
                 }
                 $state = $this->status($job);
                 $more = $state['queued'] > 0;
@@ -618,7 +643,7 @@ final class JobRunner
         $report = '';
         foreach (self::LABELS as $job => $label) {
             $skip = match (true) {
-                $job === 'tag' &&
+                in_array($job, ['tag', 'similar'], true) &&
                     array_any(
                         ['AI_PROVIDER', 'AI_MODEL', 'AI_BASE_URL', 'AI_API_KEY'],
                         fn(string $key): bool => $this->library->getSetting($key) === ''

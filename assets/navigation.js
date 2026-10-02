@@ -92,27 +92,24 @@ document.addEventListener('click', event => {
 });
 
 document.addEventListener('change', event => {
-    let filters = {
-        'gallery-sort': 'sort',
-        'gallery-person': 'person',
-        'gallery-relevance': 'relevance',
-        'gallery-favorites': 'favorites'
-    };
-    if (!(event.target.id in filters)) return;
+    if (event.target.id !== 'gallery-sort') return;
     let url = new URL(location.href);
-    url.searchParams.set(filters[event.target.id], event.target.value);
-    if (event.target.id === 'gallery-sort') url.searchParams.delete('seed');
+    url.searchParams.set('sort', event.target.value);
+    url.searchParams.delete('seed');
     url.searchParams.delete('page');
     url.searchParams.delete('offset');
     navigatePage(url.href).catch(() => {});
 });
 
+// filters apply together on submit, so choosing several of them never reloads the page halfway
 document.addEventListener('submit', event => {
     let $form = event.target;
-    if ($form.id !== 'gallery-dates') return;
+    if ($form.id !== 'gallery-filters') return;
     event.preventDefault();
     let url = new URL(location.href);
     for (let [id, parameter] of [
+        ['gallery-relevance', 'relevance'],
+        ['gallery-person', 'person'],
         ['gallery-from', 'from'],
         ['gallery-to', 'to']
     ]) {

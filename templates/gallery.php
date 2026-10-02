@@ -23,11 +23,9 @@ $jobsView ??= false;
         ) ?>"><span class="brand-icon" aria-hidden="true">▧</span> photobutler<span class="brand-dot">.</span></a>
         <p class="nav-label">BIBLIOTHEK</p>
         <nav aria-label="Bibliothek">
-            <a class="nav-item <?= !$jobsView && !$peopleView && $favorites === '0' && $album === ''
-                ? 'active'
-                : '' ?>" href="?<?= $escape(
+            <a class="nav-item <?= !$jobsView && !$peopleView && $album === '' ? 'active' : '' ?>" href="?<?= $escape(
     $galleryPreferences
-) ?>"><span aria-hidden="true">▦</span> Alle Fotos <small><?= $stats['total'] ?></small></a>
+) ?>"><span aria-hidden="true">▦</span> Fotos <small><?= $stats['total'] ?></small></a>
             <a class="nav-item <?= $peopleView ? 'active' : '' ?>" href="?view=persons&amp;<?= $escape(
     $galleryPreferences
 ) ?>"><span aria-hidden="true">♙</span> Personen <small><?= $shownPersons ?></small></a>
@@ -41,17 +39,7 @@ $jobsView ??= false;
     </aside>
     <main class="main">
         <header class="topbar"><span>Bibliothek <span class="muted">/ <?= $escape(
-            $jobsView
-                ? 'Jobs'
-                : ($peopleView
-                    ? 'Personen'
-                    : ($album !== ''
-                        ? basename($album)
-                        : match ($favorites) {
-                            '1' => 'Favoriten',
-                            'none' => 'Keine Favoriten',
-                            default => 'Alle Fotos'
-                        }))
+            $jobsView ? 'Jobs' : ($peopleView ? 'Personen' : ($album !== '' ? basename($album) : 'Fotos'))
         ) ?></span></span></header>
         <section class="intro">
             <div><h1><?= $escape($title) ?></h1><p class="muted"<?php if (
@@ -68,7 +56,7 @@ $jobsView ??= false;
             require __DIR__ . '/persons.php';
         } ?>
         <div<?= $peopleView || $jobsView ? ' hidden' : '' ?>>
-        <div class="gallery-filters"><label class="person-filter"><select id="gallery-relevance" aria-label="Relevanz"><option value="all"<?= $relevance ===
+        <form id="gallery-filters" class="gallery-filters"><label class="person-filter"><select id="gallery-relevance" aria-label="Relevanz"><option value="all"<?= $relevance ===
         'all'
             ? ' selected'
             : '' ?>>Alle anzeigen</option><option value="relevant"<?= $relevance === 'relevant'
@@ -78,29 +66,28 @@ $jobsView ??= false;
     : '' ?>>Nicht bewertete Fotos</option><option value="excluded"<?= $relevance === 'excluded'
     ? ' selected'
     : '' ?>>Ausgeblendete Fotos</option></select></label>
-        <label class="person-filter"><select id="gallery-favorites" aria-label="Favoriten"><option value="0"<?= $favorites ===
-        '0'
-            ? ' selected'
-            : '' ?>>Alle anzeigen</option><option value="1"<?= $favorites === '1'
-    ? ' selected'
-    : '' ?>>Favoriten</option><option value="none"<?= $favorites === 'none'
-    ? ' selected'
-    : '' ?>>Keine Favoriten</option></select></label>
         <label class="person-filter"><select id="gallery-person" aria-label="Person"><option value="0">Alle Personen</option><?php foreach (
             $persons
             as $item
         ): ?><option value="<?= (int) $item['id'] ?>"<?= $person === (int) $item['id']
     ? ' selected'
     : '' ?>><?= $escape($item['name'] ?: 'Person ' . $item['id']) ?></option><?php endforeach; ?></select></label>
-        <form id="gallery-dates" class="person-filter"><label class="person-filter">Von <input type="date" id="gallery-from" value="<?= $escape(
+        <label class="person-filter">Von <input type="date" id="gallery-from" value="<?= $escape(
             $from
         ) ?>"></label><label class="person-filter">Bis <input type="date" id="gallery-to" value="<?= $escape(
     $to
-) ?>"></label><button class="chip" type="submit">Filtern</button></form></div>
-        <section class="photos-section"><div class="section-heading"><h2>Fotos</h2><label class="gallery-view" for="gallery-columns"><select id="gallery-columns" aria-label="Spalten"><option value="3">3</option><option value="4">4</option><option value="5" selected>5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option></select></label><label class="gallery-view gallery-sorting" for="gallery-sort"><select id="gallery-sort" aria-label="Sortierung" data-seed="<?= $sort ===
-        'random'
-            ? $escape($seed)
-            : '' ?>"><?php foreach (
+) ?>"></label><button class="chip" type="submit">Alle filtern</button>
+            <?php if (
+                $person > 0 ||
+                $album !== '' ||
+                $relevance !== 'all' ||
+                $from !== '' ||
+                $to !== ''
+            ): ?><a class="reset" href="?sort=<?= $escape($sort) ?>">Filter zurücksetzen ×</a><?php endif; ?>
+            <label class="gallery-view" for="gallery-columns"><select id="gallery-columns" aria-label="Spalten"><option value="3">3</option><option value="4">4</option><option value="5" selected>5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option></select></label><label class="gallery-view gallery-sorting" for="gallery-sort"><select id="gallery-sort" aria-label="Sortierung" data-seed="<?= $sort ===
+            'random'
+                ? $escape($seed)
+                : '' ?>"><?php foreach (
     \vielhuber\photobutler\PhotoButler::SORT_OPTIONS
     as $value => $label
 ): ?><option value="<?= $escape($value) ?>"<?= $sort === $value ? ' selected' : '' ?>><?= $escape(
@@ -108,15 +95,8 @@ $jobsView ??= false;
 ) ?></option><?php endforeach; ?></select></label><button id="gallery-slideshow" class="chip" type="button"<?= $photos ===
 []
     ? ' disabled'
-    : '' ?>>Slideshow</button></div>
-            <?php if (
-                $person > 0 ||
-                $album !== '' ||
-                $favorites !== '0' ||
-                $relevance !== 'all' ||
-                $from !== '' ||
-                $to !== ''
-            ): ?><a class="reset" href="?sort=<?= $escape($sort) ?>">Filter zurücksetzen ×</a><?php endif; ?>
+    : '' ?>>Slideshow</button></form>
+        <section class="photos-section">
             <div class="photo-grid">
                 <?php foreach (
                     $photos

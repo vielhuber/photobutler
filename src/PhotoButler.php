@@ -37,6 +37,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
     public readonly \PDO $database;
     public readonly FaceStore $faces;
     public readonly JobRunner $jobs;
+    public readonly SimilarPhotos $similar;
     public readonly ?OneDriveSource $oneDrive;
 
     /**
@@ -130,6 +131,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         }
         $this->faces = new FaceStore($this->database);
         $this->jobs = new JobRunner($this, $this->dataPath);
+        $this->similar = new SimilarPhotos($this, $this->dataPath);
         $this->oneDrive =
             $this->getSetting('ONEDRIVE_CLIENT_ID') === ''
                 ? null
@@ -285,7 +287,8 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         $statement = $this->database->prepare("SELECT $columns FROM photos WHERE available = 1
             AND (? = '0' OR id = ?)
             AND (? = 'all' OR priority = CAST(? AS INTEGER))
-            AND (? = '0' OR EXISTS (SELECT 1 FROM faces f WHERE f.photo_id = photos.id AND f.person_id = ? AND f.ignored = 0 AND f.active = 1 AND f.modified = photos.modified AND f.bytes = photos.bytes))
+            AND (? = '0' OR id IN (SELECT f.photo_id FROM faces f JOIN photos p ON p.id = f.photo_id AND p.modified = f.modified AND p.bytes = f.bytes
+                WHERE f.person_id = ? AND f.ignored = 0 AND f.active = 1))
             AND (? = '' OR album = ?) AND (? = '0' OR (priority = 1) = CAST(? AS INTEGER))
             AND (? = '' OR substr(taken, 1, 10) >= ?) AND (? = '' OR substr(taken, 1, 10) <= ?)
             AND unicode_lower(name || ' ' || album || ' ' || description || ' ' || COALESCE(manual_tags, ai_tags)) LIKE ? ESCAPE '\'
@@ -390,29 +393,11 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
                     $attempt = $this->database->prepare('UPDATE photos SET attempted = ? WHERE id = ?');
                     $attempt->execute([time(), $photo['id']]);
                     try {
-                        foreach (['AI_PROVIDER', 'AI_MODEL', 'AI_BASE_URL', 'AI_API_KEY'] as $key) {
-                            if ($this->getSetting($key) === '') {
-                                throw new \RuntimeException('KI-Konfiguration unvollständig: ' . $key);
-                            }
-                        }
                         $path = $this->imagePath((int) $photo['id'], cachedOnly: true);
                         if ($path === null) {
                             throw new \RuntimeException('Vorschaubild nicht verfügbar.');
                         }
-                        $ai = aihelper::create(
-                            provider: $this->getSetting('AI_PROVIDER'),
-                            model: $this->getSetting('AI_MODEL'),
-                            api_key: $this->getSetting('AI_API_KEY'),
-                            url: $this->getSetting('AI_BASE_URL'),
-                            timeout: 90,
-                            max_tries: 1,
-                            stream: false
-                        );
-                        if ($ai === null) {
-                            throw new \RuntimeException(
-                                'KI-Anfrage fehlgeschlagen. Provider, Modell und Zugangsdaten prüfen.'
-                            );
-                        }
+                        $ai = $this->ai();
                         $this->jobs->log('tag', 'Warte auf KI-Antwort für Foto ' . $photo['id'] . ' …');
                         $named = array_filter(
                             $this->faces->photoFaces((int) $photo['id']),
@@ -475,6 +460,27 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             flock($lock, LOCK_UN);
             fclose($lock);
         }
+    }
+
+    /**
+     * Create a single-shot ai client from the configured provider settings.
+     */
+    public function ai(): aihelper
+    {
+        foreach (['AI_PROVIDER', 'AI_MODEL', 'AI_BASE_URL', 'AI_API_KEY'] as $key) {
+            if ($this->getSetting($key) === '') {
+                throw new \RuntimeException('KI-Konfiguration unvollständig: ' . $key);
+            }
+        }
+        return aihelper::create(
+            provider: $this->getSetting('AI_PROVIDER'),
+            model: $this->getSetting('AI_MODEL'),
+            api_key: $this->getSetting('AI_API_KEY'),
+            url: $this->getSetting('AI_BASE_URL'),
+            timeout: 90,
+            max_tries: 1,
+            stream: false
+        ) ?? throw new \RuntimeException('KI-Anfrage fehlgeschlagen. Provider, Modell und Zugangsdaten prüfen.');
     }
 
     /**
@@ -553,7 +559,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
     {
         $locks = [];
         try {
-            foreach (['cli-tag', 'cli-faces', 'job-tag', 'job-faces', 'tag', 'faces'] as $name) {
+            foreach (['cli-tag', 'cli-faces', 'job-tag', 'job-faces', 'tag', 'faces', 'similar'] as $name) {
                 $lock = fopen($this->dataPath . '/' . $name . '.lock', 'c');
                 if ($lock === false) {
                     throw new \RuntimeException('Zurücksetzen nicht möglich. Schreibrechte prüfen.');
@@ -565,6 +571,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             }
             $this->database->exec('BEGIN IMMEDIATE');
             $count = $this->database->exec(self::RATING_RESET);
+            $this->database->exec('DELETE FROM similar_state');
             $this->database->exec(
                 'DELETE FROM faces; DELETE FROM face_state; DELETE FROM person_separations; DELETE FROM persons;'
             );
@@ -964,7 +971,6 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             return;
         }
         $album = is_string($_GET['album'] ?? null) ? $_GET['album'] : '';
-        $favorites = in_array($_GET['favorites'] ?? '', ['1', 'none'], true) ? $_GET['favorites'] : '0';
         $sort = is_string($_GET['sort'] ?? null) && isset(self::SORT_OPTIONS[$_GET['sort']]) ? $_GET['sort'] : 'newest';
         $relevance = in_array($_GET['relevance'] ?? '', ['all', 'unrated', 'excluded'], true)
             ? $_GET['relevance']
@@ -1019,7 +1025,6 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
                 ? []
                 : $this->photos(
                     album: $album,
-                    favorites: $favorites,
                     page: $page,
                     sort: $sort,
                     person: $person,
@@ -1032,23 +1037,9 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         $matchedPhotos =
             $peopleView || $jobsView
                 ? null
-                : $this->photoCount(
-                    album: $album,
-                    favorites: $favorites,
-                    person: $person,
-                    relevance: $relevance,
-                    from: $from,
-                    to: $to
-                );
+                : $this->photoCount(album: $album, person: $person, relevance: $relevance, from: $from, to: $to);
         $stats = $this->photoStats();
-        $title =
-            $album !== ''
-                ? basename($album)
-                : match ($favorites) {
-                    '1' => 'Favoriten',
-                    'none' => 'Keine Favoriten',
-                    default => 'Fotos'
-                };
+        $title = $album !== '' ? basename($album) : 'Fotos';
         if ($peopleView) {
             $title = $selectedPerson !== null ? ($selectedPerson['name'] ?: 'Person ' . $person) : 'Personen';
         }
@@ -1058,7 +1049,6 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         $pagination = [
             'person' => $person,
             'album' => $album,
-            'favorites' => $favorites,
             'sort' => $sort,
             'relevance' => $relevance,
             'seed' => $sort === 'random' ? $seed : '',
@@ -1068,15 +1058,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         $image = filter_var($_GET['image'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         $selectedMedia =
             $image && !$peopleView && !$jobsView
-                ? $this->photos(
-                    album: $album,
-                    favorites: $favorites,
-                    person: $person,
-                    relevance: $relevance,
-                    id: $image,
-                    from: $from,
-                    to: $to
-                )
+                ? $this->photos(album: $album, person: $person, relevance: $relevance, id: $image, from: $from, to: $to)
                 : [];
         $selectedPhoto = $selectedMedia[0]->id ?? 0;
         $selectedVideo = $selectedMedia[0]->video ?? false;
@@ -1133,6 +1115,14 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         );
         $faceState->execute([$photo->id, $row['modified'], $row['bytes'], FaceStore::MODEL]);
         $photo->face_status = $faceState->fetchColumn() ?: 'pending';
+        $photo->similar = '';
+        if ($photo->priority === -1 && $row['ai_priority'] === -1) {
+            $similar = $this->database->prepare(
+                "SELECT reason FROM similar_state WHERE photo_id = ? AND status = 'hidden' AND modified = ? AND bytes = ?"
+            );
+            $similar->execute([$photo->id, $row['modified'], $row['bytes']]);
+            $photo->similar = (string) $similar->fetchColumn();
+        }
         return $photo;
     }
 

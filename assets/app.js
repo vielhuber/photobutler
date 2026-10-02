@@ -260,7 +260,7 @@ export function initializeGallery(navigatePage) {
                 photo.album,
                 ...(photo.width > 0 && photo.height > 0 ? [`${photo.width} × ${photo.height}`] : [])
             ].join(' · ');
-            $description.textContent = photo.description ? `KI-Bewertung: ${photo.description}` : '';
+            renderDescription(photo);
             $image.alt = photo.description || photo.name;
             $favorite.textContent = photo.favorite ? '♥ Favorit entfernen' : '♡ Als Favorit';
             $favorite.disabled = false;
@@ -278,6 +278,14 @@ export function initializeGallery(navigatePage) {
                 $message.textContent = error.message;
             }
         }
+    }
+
+    function renderDescription(photo) {
+        $description.textContent = photo.similar
+            ? `Ähnliches Foto ausgeblendet: ${photo.similar}`
+            : photo.description
+              ? `KI-Bewertung: ${photo.description}`
+              : '';
     }
 
     function renderFaces(photo) {
@@ -393,14 +401,12 @@ export function initializeGallery(navigatePage) {
         $buttons.forEach($button =>
             $button.setAttribute('aria-pressed', String(Number($button.dataset.priority) === value))
         );
-        let mode = document.querySelector('#gallery-favorites').value;
-        let relevance = document.querySelector('#gallery-relevance').value;
+        // the applied filters, not pending choices in the filter form
+        let relevance = document.querySelector('#gallery-relevance option[selected]')?.value ?? 'all';
         let hidden =
             (relevance === 'relevant' && value !== 1) ||
             (relevance === 'excluded' && value !== -1) ||
-            (relevance === 'unrated' && value !== 0) ||
-            (mode === '1' && value !== 1) ||
-            (mode === 'none' && value === 1);
+            (relevance === 'unrated' && value !== 0);
         if ($card) {
             let $count = document.querySelector('#gallery-count');
             if ($count && $card.parentElement.hidden !== hidden) {
@@ -462,6 +468,7 @@ export function initializeGallery(navigatePage) {
             }
             if (currentPhoto?.id !== updated.id) return;
             currentPhoto = updated;
+            renderDescription(updated);
             $favorite.textContent = updated.favorite ? '♥ Favorit entfernen' : '♡ Als Favorit';
             $message.textContent = 'Gespeichert.';
         } catch (error) {

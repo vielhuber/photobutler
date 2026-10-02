@@ -262,7 +262,7 @@ final class PhotoButlerTest extends TestCase
     public function testJobsRequireExplicitStartsAndStayIndependent(): void
     {
         $jobs = $this->library->jobs;
-        $this->assertCount(4, $jobs->all());
+        $this->assertCount(5, $jobs->all());
         $this->assertSame('idle', $jobs->all()['scan']['status']);
         $this->assertSame(0, $jobs->step('scan', 'not-started')['completed']);
         $this->assertCount(0, $this->library->photos());
@@ -360,7 +360,7 @@ final class PhotoButlerTest extends TestCase
         $source = $this->root . '/.data/onedrive-source.json';
         rename($source, $source . '.offline');
         $states = $this->library->jobs->all();
-        $this->assertCount(4, $states);
+        $this->assertCount(5, $states);
         $this->assertSame('paused', $states['scan']['status']);
         $this->assertSame(1, $states['scan']['completed']);
         $this->assertSame(1, $states['scan']['total']);
@@ -512,8 +512,8 @@ final class PhotoButlerTest extends TestCase
                 ->prepare('INSERT INTO job_timings (job, seconds_per_file) VALUES (?, ?)')
                 ->execute([$job === 'previews' ? 'thumbnails' : $job, 4800]);
         }
-        foreach ($this->library->jobs->all() as $state) {
-            $this->assertSame('ca. 1 Std. 20 Min.', $state['eta']);
+        foreach ($this->library->jobs->all() as $job => $state) {
+            $this->assertSame($job === 'similar' ? 'Noch nicht abschätzbar' : 'ca. 1 Std. 20 Min.', $state['eta']);
         }
         foreach (
             [1 => 'Unter 1 Min.', 60 => 'ca. 1 Min.', 3600 => 'ca. 1 Std.', 90000 => 'ca. 1 Tag 1 Std.']
@@ -870,7 +870,6 @@ final class PhotoButlerTest extends TestCase
         $seed = '';
         $galleryPreferences = http_build_query(['sort' => $sort, 'relevance' => $relevance]);
         $selectedPhoto = 0;
-        $favorites = '0';
         $peopleView = false;
         $person = 0;
         $persons = [];
@@ -885,7 +884,6 @@ final class PhotoButlerTest extends TestCase
             'q' => 'Meer & Strand',
             'album' => 'Urlaub',
             'tag' => 'Meer',
-            'favorites' => '1',
             'sort' => $sort,
             'from' => $from,
             'to' => $to
@@ -922,8 +920,7 @@ final class PhotoButlerTest extends TestCase
             'Ausgeblendete Fotos',
             $document->querySelector('#gallery-relevance option[value="excluded"]')->textContent
         );
-        $this->assertSame(3, $document->querySelectorAll('#gallery-favorites option')->length);
-        $this->assertSame('0', $document->querySelector('#gallery-favorites option[selected]')->getAttribute('value'));
+        $this->assertNull($document->querySelector('#gallery-favorites'));
         $this->assertSame('Spalten', $document->querySelector('#gallery-columns')->getAttribute('aria-label'));
         $this->assertSame('Sortierung', $document->querySelector('#gallery-sort')->getAttribute('aria-label'));
         $this->assertSame(
@@ -1648,10 +1645,10 @@ final class PhotoButlerTest extends TestCase
                 [$status, $jobsBody] = $request('?view=jobs');
                 $this->assertSame(200, $status);
                 $jobsDocument = \Dom\HTMLDocument::createFromString($jobsBody, LIBXML_NOERROR);
-                $this->assertSame(4, $jobsDocument->querySelectorAll('[data-job]')->length);
+                $this->assertSame(5, $jobsDocument->querySelectorAll('[data-job]')->length);
                 [$status, $jobsBody] = $request('?jobs=1');
                 $this->assertSame(200, $status);
-                $this->assertCount(4, json_decode($jobsBody, true, flags: JSON_THROW_ON_ERROR));
+                $this->assertCount(5, json_decode($jobsBody, true, flags: JSON_THROW_ON_ERROR));
             } finally {
                 rename($source . '.offline', $source);
             }
@@ -1703,6 +1700,15 @@ final class PhotoButlerTest extends TestCase
             $this->assertStringContainsString('Person einblenden', $personBody);
             $this->assertSame(200, $request('', ['action' => 'face-show', 'id' => $person, 'csrf' => $match[1]])[0]);
             $this->assertStringContainsString('Gast', $request('?view=persons')[1]);
+            $document = \Dom\HTMLDocument::createFromString(
+                $request('?relevance=all&person=' . $person)[1],
+                LIBXML_NOERROR
+            );
+            $this->assertSame(
+                (string) $person,
+                $document->querySelector('#gallery-person option[selected]')?->getAttribute('value')
+            );
+            $this->assertCount(1, $document->querySelectorAll('.photo-card'));
             $friend = clone $face;
             $friend->box = [0.5, 0.1, 0.2, 0.2];
             $friend->embedding = array_pad([0.0, 1.0], 128, 0.0);
@@ -1776,9 +1782,9 @@ final class PhotoButlerTest extends TestCase
             [$status, $body] = $request('?view=jobs');
             $this->assertSame(200, $status);
             $document = \Dom\HTMLDocument::createFromString($body, LIBXML_NOERROR);
-            $this->assertSame(4, $document->querySelectorAll('[data-job]')->length);
+            $this->assertSame(5, $document->querySelectorAll('[data-job]')->length);
             $this->assertSame(
-                ['Galerie einlesen', 'Thumbnails downloaden', 'Gesichtertagging', 'KI-Bewertung'],
+                ['Galerie einlesen', 'Thumbnails downloaden', 'Gesichtertagging', 'KI-Bewertung', 'Ähnliche Fotos'],
                 array_map(
                     fn($heading): string => $heading->textContent,
                     iterator_to_array($document->querySelectorAll('[data-job] h2'))
@@ -1791,8 +1797,8 @@ final class PhotoButlerTest extends TestCase
                 $document->querySelectorAll('[data-job-action="start"], [data-job-action="pause"], [data-job-log]')
                     ->length
             );
-            $this->assertSame(4, $document->querySelectorAll('[data-job-action="reset"]')->length);
-            foreach (['scan', 'previews', 'tag', 'faces'] as $job) {
+            $this->assertSame(5, $document->querySelectorAll('[data-job-action="reset"]')->length);
+            foreach (['scan', 'previews', 'tag', 'faces', 'similar'] as $job) {
                 $command = $document->querySelector('[data-job="' . $job . '"] .job-command code')->textContent;
                 $this->assertStringStartsWith('php ', $command);
                 $this->assertStringContainsString('--root=' . escapeshellarg($this->root), $command);
@@ -1863,6 +1869,7 @@ final class PhotoButlerTest extends TestCase
                     'height',
                     'persons',
                     'face_status',
+                    'similar',
                     'faces'
                 ],
                 array_keys($detail)

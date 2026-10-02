@@ -264,13 +264,6 @@ h1 {
     background: var(--soft);
     border-color: #b2c1a9;
 }
-.section-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin: 27px 0 15px;
-}
 h2 {
     font-size: 15px;
     font-weight: 600;
@@ -292,23 +285,44 @@ h2 {
     border-radius: 6px;
     padding: 4px 8px;
 }
-.section-heading .muted {
-    font-size: 10px;
-}
 .gallery-filters {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 16px;
+    gap: 10px;
+}
+.gallery-filters > * {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+.gallery-filters > .chip,
+.gallery-filters > .reset,
+.gallery-filters > label:has(input, #gallery-columns) {
+    flex: none;
+}
+.gallery-view + .gallery-view {
+    margin-left: 0;
 }
 .gallery-filters select {
-    max-width: 100%;
+    width: 100%;
+    min-width: 80px;
 }
-.photos-section > .section-heading {
-    flex-wrap: wrap;
+@media (max-width: 1280px) {
+    .gallery-filters {
+        flex-wrap: wrap;
+    }
+}
+.gallery-filters .person-filter {
+    flex-wrap: nowrap;
+    gap: 6px;
+    font-size: 12px;
+}
+.gallery-filters .person-filter select,
+.gallery-filters .person-filter input {
+    padding: 4px 6px;
+    border-radius: 6px;
 }
 .photos-section {
-    margin-top: 31px;
+    margin-top: 20px;
 }
 .photo-grid {
     display: grid;
@@ -426,7 +440,7 @@ h2 {
 .reset {
     display: inline-block;
     font-size: 11px;
-    margin: 0 0 16px;
+    margin: 0;
     color: #6c7c61;
 }
 .photo-loader {

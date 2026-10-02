@@ -375,6 +375,10 @@ final class OneDriveSource
                     [
                         'DELETE FROM faces WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
                         'DELETE FROM face_state WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
+                        // photos hidden in favor of a removed one become visible again and are compared anew
+                        "UPDATE photos SET priority = 1, ai_priority = 1 WHERE priority = -1 AND ai_priority = -1
+                            AND id IN (SELECT photo_id FROM similar_state WHERE status = 'hidden' AND kept IN (SELECT id FROM photos WHERE seen<>?))",
+                        'DELETE FROM similar_state WHERE EXISTS (SELECT 1 FROM photos WHERE seen<>? AND id IN (similar_state.photo_id, similar_state.kept))',
                         'DELETE FROM onedrive_photos WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
                         'DELETE FROM onedrive_preview_fallbacks WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
                         'DELETE FROM photo_metadata WHERE path IN (SELECT path FROM photos WHERE seen<>?)',

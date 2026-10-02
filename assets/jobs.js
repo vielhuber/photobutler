@@ -28,7 +28,7 @@ export function initializeJobs($main) {
                 state.warning ||
                 (state.errors
                     ? 'Fehler prüfen und manuell erneut starten.' +
-                      (['tag', 'faces'].includes(job) ? ' Wiederholung frühestens nach einer Stunde.' : '')
+                      (['tag', 'faces', 'similar'].includes(job) ? ' Wiederholung frühestens nach einer Stunde.' : '')
                     : '');
         }
     }
