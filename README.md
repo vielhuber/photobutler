@@ -88,7 +88,13 @@ reference values from the verified installation: 96,451 photos (286 GB in OneDri
 
 ### 8. cron
 
-add a cronjob in the hosting panel (all-inkl: KAS → cronjobs) that requests `https://<domain>/?cron=<CRON_SECRET>`, for example every 15 minutes. get the value with `grep CRON_SECRET .data/.env`. details in [cron](#cron).
+add **one** cronjob in the hosting panel (all-inkl: **KAS → Tools → Cronjobs → Cronjob anlegen**) for this url:
+
+```text
+https://<domain>/?cron=<CRON_SECRET>
+```
+
+select `https://` as the protocol and enter `<domain>/?cron=<CRON_SECRET>` as the path, not a shell command. replace `<domain>` with your gallery domain and `<CRON_SECRET>` with the value from the private `.data/.env` on production. set the execution interval to **every 15 minutes**, for example. keep the configured url private. details in [cron](#cron).
 
 ### 9. check
 
@@ -114,7 +120,7 @@ php bin/photobutler-init
 
 ## cron
 
-`https://<your-domain>/?cron=<CRON_SECRET>` resumes all four jobs in order (import, thumbnails, faces, ai rating) within one request. each call starts or resumes the jobs, runs steps for about 60 seconds and then pauses the running job at its checkpoint for the next call; a started step (for example a slow ai request) is finished first, so a call can take up to about two minutes. the ai rating is skipped while `AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL` or `AI_API_KEY` is empty, face recognition while its runtime is not installed. a job that is currently running on the console is skipped. the response is a plain-text status line per job.
+`https://<domain>/?cron=<CRON_SECRET>` processes all five jobs in order (import, thumbnails, faces, ai rating, similar photos). each call starts or resumes jobs within a shared processing budget of about 60 seconds and then pauses the running job at its checkpoint for the next call; a started step (for example a slow ai request) is finished first, so the request can take longer. jobs not reached within the budget wait for the next call. the ai rating and similar-photo job are skipped while `AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL` or `AI_API_KEY` is empty, face recognition while its runtime is not installed. a job that is currently running on the console is skipped. the response is a plain-text status line per job.
 
 a wrong token returns 403, a missing or too short `CRON_SECRET` 503. the token is part of the url and can appear in webserver access logs; keep it private and rotate it in `.data/.env` if it leaks. any scheduler that can request a url works, including an external one.
 
