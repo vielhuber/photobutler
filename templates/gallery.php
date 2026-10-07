@@ -26,6 +26,9 @@ $jobsView ??= false;
             <a class="nav-item <?= !$jobsView && !$peopleView && $album === '' ? 'active' : '' ?>" href="?<?= $escape(
     $galleryPreferences
 ) ?>"><span aria-hidden="true">▦</span> Fotos <small><?= $stats['total'] ?></small></a>
+            <button id="nav-slideshow" class="nav-action" type="button"<?= (int) $stats['favorites'] === 0
+                ? ' disabled'
+                : '' ?>><span aria-hidden="true">▷</span> Slideshow</button>
             <a class="nav-item <?= $peopleView ? 'active' : '' ?>" href="?view=persons&amp;<?= $escape(
     $galleryPreferences
 ) ?>"><span aria-hidden="true">♙</span> Personen <small><?= $shownPersons ?></small></a>

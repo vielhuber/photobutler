@@ -122,7 +122,8 @@ button:disabled {
     color: #90988f;
     margin: 12px 12px;
 }
-.nav-item {
+.nav-item,
+.nav-action {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -131,11 +132,20 @@ button:disabled {
     color: #6a776b;
     margin: 3px 0;
 }
-.nav-item > span:first-child {
+.nav-action {
+    width: 100%;
+    border: 0;
+    background: none;
+    font: inherit;
+    text-align: left;
+}
+.nav-item > span:first-child,
+.nav-action > span:first-child {
     font-size: 21px;
     line-height: 1;
 }
-.sidebar > nav[aria-label='Bibliothek'] .nav-item > span:first-child {
+.sidebar > nav[aria-label='Bibliothek'] .nav-item > span:first-child,
+.sidebar > nav[aria-label='Bibliothek'] .nav-action > span:first-child {
     flex: 0 0 24px;
     min-width: 0;
     text-align: center;
@@ -146,6 +156,7 @@ button:disabled {
     font-size: 11px;
 }
 .nav-item:hover,
+.nav-action:hover,
 .nav-item.active {
     background: #e0e8dc;
     color: #34503d;
@@ -711,9 +722,12 @@ textarea,
     }
     .sidebar > nav {
         display: flex;
+        flex-wrap: wrap;
         gap: 10px;
     }
-    .nav-item {
+    .nav-item,
+    .nav-action {
+        width: auto;
         font-size: 12px;
         padding: 8px 12px;
     }
@@ -944,6 +958,18 @@ textarea,
 #viewer.slideshow .viewer-stage {
     height: 100dvh;
     background: black;
+    overflow: hidden;
+}
+#viewer.slideshow #viewer-image {
+    position: relative;
+}
+#viewer.slideshow .viewer-stage[data-preview-state='loading'] #viewer-image {
+    opacity: 0;
+}
+#viewer.slideshow .slideshow-previous {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
 }
 #viewer.slideshow .viewer-info,
 #viewer.slideshow .viewer-close,

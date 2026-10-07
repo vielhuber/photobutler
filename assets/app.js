@@ -80,7 +80,7 @@ export function initializeGallery(navigatePage) {
         } catch {}
     });
 
-    let previewSelector = '[data-preview-state] > img';
+    let previewSelector = '[data-preview-state] > img:not(.slideshow-previous)';
     function updatePreview($image) {
         let state =
             !$image.getAttribute('src') || !$image.complete ? 'loading' : $image.naturalWidth > 0 ? 'ready' : 'error';
@@ -116,6 +116,8 @@ export function initializeGallery(navigatePage) {
     let $next = document.querySelector('.viewer-next');
     let csrf = document.querySelector('meta[name="csrf-token"]').content;
     let slideshow = false;
+    let overviewSlideshow = false;
+    let $slideshowPrevious = null;
     let slideshowRun = 0;
     let slideTimer = null;
     let $slideshowStop = document.querySelector('#slideshow-stop');
@@ -132,13 +134,17 @@ export function initializeGallery(navigatePage) {
     let preloadFrame = null;
     let $hoveredCard = null;
     function stopSlideshow() {
+        let wasPlaying = slideshow;
         slideshow = false;
         slideshowRun++;
         clearTimeout(slideTimer);
         slideTimer = null;
         $slideshowStop.hidden = true;
         $viewer.classList.remove('slideshow');
-        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        $slideshowPrevious?.remove();
+        $slideshowPrevious = null;
+        $image.getAnimations().forEach(animation => animation.cancel());
+        if (wasPlaying && document.fullscreenElement) document.exitFullscreen().catch(() => {});
     }
 
     function scheduleSlideshow() {
@@ -147,10 +153,12 @@ export function initializeGallery(navigatePage) {
         let run = slideshowRun;
         slideTimer = setTimeout(async () => {
             if (!slideshow || run !== slideshowRun) return;
-            while (currentIndex === $cards.length - 1 && $photoLoader.dataset.next) {
+            let nextIndex = currentIndex + 1 + (overviewSlideshow ? Math.floor(Math.random() * 4) : 0);
+            while (nextIndex >= $cards.length && $photoLoader.dataset.next) {
                 if (photosLoading) {
-                    slideTimer = setTimeout(scheduleSlideshow, 250);
-                    return;
+                    await new Promise(resolve => setTimeout(resolve, 250));
+                    if (!slideshow || run !== slideshowRun) return;
+                    continue;
                 }
                 await loadMorePhotos();
                 if (!slideshow || run !== slideshowRun) return;
@@ -160,15 +168,46 @@ export function initializeGallery(navigatePage) {
                     return;
                 }
             }
-            if (currentIndex >= $cards.length - 1) {
+            if (nextIndex >= $cards.length && !overviewSlideshow) {
                 closePhoto();
                 $photoLoadMessage.textContent = 'Slideshow beendet.';
                 return;
             }
-            await openPhoto($cards[currentIndex + 1].dataset.photo);
+            if (nextIndex >= $cards.length) nextIndex = 0;
+            await openPhoto($cards[nextIndex].dataset.photo);
         }, 6000);
     }
 
+    async function startSlideshow(allPhotos = false) {
+        stopSlideshow();
+        let fullscreen = document.documentElement.requestFullscreen?.().catch(() => {});
+        let url = new URL(location.href);
+        if (allPhotos) url.search = 'sort=newest&relevance=relevant';
+        if (allPhotos || Number(url.searchParams.get('page')) > 1) {
+            for (let key of ['page', 'offset', 'image']) url.searchParams.delete(key);
+            try {
+                await navigatePage(url.href);
+            } catch {
+                await fullscreen;
+                if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+                return;
+            }
+        }
+        await fullscreen;
+        if (!$cards.length) {
+            if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+            return;
+        }
+        slideshow = true;
+        overviewSlideshow = allPhotos;
+        $viewer.classList.add('slideshow');
+        $slideshowStop.hidden = false;
+        await openPhoto($cards[0].dataset.photo);
+    }
+
+    $sidebar.addEventListener('click', event => {
+        if (event.target.closest('#nav-slideshow')) startSlideshow(true);
+    });
     $slideshowStop.addEventListener('click', closePhoto);
     document.addEventListener(
         'fullscreenchange',
@@ -197,6 +236,24 @@ export function initializeGallery(navigatePage) {
     preloadObserver.observe($main);
     $image.addEventListener('load', () => {
         schedulePreloads();
+        if (slideshow) {
+            let $previousImage = $slideshowPrevious;
+            if (matchMedia('(prefers-reduced-motion: reduce)').matches) $previousImage?.remove();
+            if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                $image.animate(
+                    [
+                        { opacity: 0, transform: 'scale(0.98)' },
+                        { opacity: 1, transform: 'scale(1)', offset: 0.17 },
+                        { opacity: 1, transform: 'scale(1.025)' }
+                    ],
+                    { duration: 6500, easing: 'ease-out', fill: 'forwards' }
+                );
+                $previousImage?.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 1100 }).finished.then(
+                    () => $previousImage.remove(),
+                    () => {}
+                );
+            }
+        }
         scheduleSlideshow();
     });
     $image.addEventListener('error', schedulePreloads);
@@ -207,6 +264,17 @@ export function initializeGallery(navigatePage) {
         if (!Number.isSafeInteger(id) || id < 1) return;
         slideshowRun++;
         clearTimeout(slideTimer);
+        $slideshowPrevious?.remove();
+        $slideshowPrevious = null;
+        if (slideshow && $image.complete && $image.naturalWidth) {
+            $slideshowPrevious = $image.cloneNode();
+            $slideshowPrevious.removeAttribute('id');
+            $slideshowPrevious.className = 'slideshow-previous';
+            $slideshowPrevious.alt = '';
+            $slideshowPrevious.setAttribute('aria-hidden', 'true');
+            $image.before($slideshowPrevious);
+        }
+        $image.getAnimations().forEach(animation => animation.cancel());
         currentIndex = $cards.findIndex($card => Number($card.dataset.photo) === id);
         if (updateHistory) {
             let url = new URL(location.href);
@@ -515,24 +583,7 @@ export function initializeGallery(navigatePage) {
             return;
         }
         if (event.target.closest('#gallery-slideshow')) {
-            if (Number(new URL(location.href).searchParams.get('page')) > 1) {
-                let url = new URL(location.href);
-                url.searchParams.delete('page');
-                url.searchParams.delete('offset');
-                url.searchParams.delete('image');
-                try {
-                    await navigatePage(url.href);
-                } catch {
-                    return;
-                }
-            }
-            if (!$cards.length) return;
-            stopSlideshow();
-            slideshow = true;
-            $viewer.classList.add('slideshow');
-            await document.documentElement.requestFullscreen?.().catch(() => {});
-            $slideshowStop.hidden = false;
-            await openPhoto($cards[0].dataset.photo);
+            await startSlideshow();
             return;
         }
         let $card = event.target.closest('[data-photo]');
