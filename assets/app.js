@@ -127,6 +127,7 @@ export function initializeGallery(navigatePage) {
     let csrf = document.querySelector('meta[name="csrf-token"]').content;
     let slideshow = false;
     let overviewSlideshow = false;
+    let wakeLock = null;
     let $slideshowPrevious = null;
     let slideshowRun = 0;
     let scheduledSlideshowRun = -1;
@@ -144,12 +145,36 @@ export function initializeGallery(navigatePage) {
     let preloader = new DetailPreloader();
     let preloadFrame = null;
     let $hoveredCard = null;
+    async function keepSlideshowAwake() {
+        if (
+            !slideshow ||
+            document.visibilityState !== 'visible' ||
+            !navigator.wakeLock ||
+            (wakeLock && !wakeLock.released)
+        )
+            return;
+        try {
+            let requestedLock = await navigator.wakeLock.request('screen');
+            if (!slideshow || document.visibilityState !== 'visible' || (wakeLock && !wakeLock.released)) {
+                await requestedLock.release();
+                return;
+            }
+            wakeLock = requestedLock;
+        } catch {
+            if (slideshow)
+                $photoLoadMessage.textContent =
+                    'Das Gerät erlaubt kein Wachhalten des Bildschirms. Energiesparmodus prüfen.';
+        }
+    }
+
     function stopSlideshow() {
         let wasPlaying = slideshow;
         slideshow = false;
         slideshowRun++;
         clearTimeout(slideTimer);
         slideTimer = null;
+        wakeLock?.release();
+        wakeLock = null;
         $viewer.classList.remove('slideshow');
         cancelAnimationFrame(dissolveFrame);
         $slideshowPrevious?.remove();
@@ -244,12 +269,14 @@ export function initializeGallery(navigatePage) {
         slideshow = true;
         overviewSlideshow = allPhotos;
         $viewer.classList.add('slideshow');
+        keepSlideshowAwake();
         await openPhoto($cards[0].dataset.photo);
     }
 
     $sidebar.addEventListener('click', event => {
         if (event.target.closest('#nav-slideshow')) startSlideshow(true);
     });
+    document.addEventListener('visibilitychange', keepSlideshowAwake, { signal: lifecycle.signal });
     document.addEventListener(
         'fullscreenchange',
         () => {
