@@ -20,9 +20,7 @@ $jobsView ??= false;
     <p id="navigation-message" class="navigation-message" role="alert" hidden></p>
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-resize" id="sidebar-resize" role="separator" tabindex="0" aria-label="Breite der Seitenleiste" aria-orientation="vertical" aria-controls="sidebar" aria-valuemin="210" aria-valuemax="640" aria-valuenow="250"></div>
-        <a class="brand" href="?<?= $escape(
-            $galleryPreferences
-        ) ?>"><span class="brand-icon" aria-hidden="true">▧</span> photobutler<span class="brand-dot">.</span></a>
+        <a class="brand" href="./"><span class="brand-icon" aria-hidden="true">▧</span> photobutler<span class="brand-dot">.</span></a>
         <p class="nav-label">BIBLIOTHEK</p>
         <nav aria-label="Bibliothek">
             <a class="nav-item <?= !$jobsView && !$peopleView && $album === '' ? 'active' : '' ?>" href="?<?= $escape(
