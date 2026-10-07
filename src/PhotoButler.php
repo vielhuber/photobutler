@@ -625,7 +625,10 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
                     'preferences.js',
                     'preloader.js',
                     'jobs.js',
-                    'favicon.svg'
+                    'favicon.svg',
+                    'manifest.webmanifest',
+                    'icon-192.png',
+                    'icon-512.png'
                 ],
                 true
             )
@@ -633,9 +636,11 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             $contentType = match ($asset) {
                 'app.css' => 'text/css',
                 'favicon.svg' => 'image/svg+xml',
+                'manifest.webmanifest' => 'application/manifest+json',
+                'icon-192.png', 'icon-512.png' => 'image/png',
                 default => 'text/javascript'
             };
-            header('Content-Type: ' . $contentType . '; charset=utf-8');
+            header('Content-Type: ' . $contentType . ($contentType === 'image/png' ? '' : '; charset=utf-8'));
             readfile(dirname(__DIR__) . '/assets/' . $asset);
             return;
         }

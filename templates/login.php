@@ -5,9 +5,11 @@ declare(strict_types=1) ?>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#355846">
     <meta name="csrf-token" content="<?= $escape($csrf) ?>">
     <title>Anmelden · photobutler</title>
     <link rel="icon" type="image/svg+xml" href="?asset=favicon.svg">
+    <link rel="manifest" href="?asset=manifest.webmanifest">
     <script src="?asset=preferences.js"></script>
     <link rel="stylesheet" href="?asset=app.css">
     <script type="module" src="?asset=navigation.js"></script>
