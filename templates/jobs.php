@@ -23,6 +23,7 @@ declare(strict_types=1) ?>
 ) ?> Fortschritt"></progress>
             <p class="muted" data-job-count><?= $state['completed'] ?> / <?= $state['total'] .
      ($state['estimated'] ? ' (geschätzt)' : '') ?> · <?= $state['errors'] ?> Fehler</p>
+            <p class="muted">Letzter Lauf: <span data-job-last-run><?= $escape($state['last_run']) ?></span></p>
             <dl class="job-estimate">
                 <dt>Geschätzte Restlaufzeit</dt>
                 <dd data-job-eta><?= $escape($state['eta']) ?></dd>

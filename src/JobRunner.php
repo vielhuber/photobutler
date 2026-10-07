@@ -114,6 +114,11 @@ final class JobRunner
         $statement->execute([$job]);
         $state['log'] = array_reverse($statement->fetchAll());
         $statement->closeCursor();
+        $lastLog = end($state['log']);
+        $state['last_run'] =
+            $lastLog && $lastLog['message'] !== 'Daten zurückgesetzt. Wartet auf manuellen Start.'
+                ? $lastLog['time']
+                : 'Noch nicht protokolliert';
         $state['warning'] = '';
         if ($job === 'scan') {
             try {

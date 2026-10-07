@@ -134,7 +134,7 @@ authentication checks use `composer test -- --filter AuthenticationTest`.
 
 ## usage
 
-open your server's url and sign in. photos load as you scroll; selected filters stay active. **Jobs** displays the PHP console commands, status, progress and remaining processing time for **Galerie einlesen**, **Thumbnails downloaden**, **Gesichtertagging**, **KI-Bewertung** and **Ähnliche Fotos**, in this order. each command runs exactly one independent job on the server, without requiring an open browser. importing never starts analysis or preview generation.
+open your server's url and sign in. photos load as you scroll; selected filters stay active. **Jobs** displays the PHP console commands, status, progress and remaining processing time for **Galerie einlesen**, **Thumbnails downloaden**, **Gesichtertagging**, **KI-Bewertung** and **Ähnliche Fotos**, in this order. **Letzter Lauf** shows each job's last recorded run activity (day, month and time), or **Noch nicht protokolliert** without a retained run log; polling and reloads do not change it, and a data reset is not counted as a run. each command runs exactly one independent job on the server, without requiring an open browser. importing never starts analysis or preview generation.
 
 jobs run on the console or through the [cron url](#cron), never from the gallery. browser start, pause and step endpoints return HTTP 410; the browser polls status every three seconds and retains the independently confirmed data resets. stop a running job before resetting its data. page navigation, reloads and closing the browser do not affect processing.
 

@@ -20,6 +20,7 @@ export function initializeJobs($main) {
             $card.querySelector('[data-job-status]').textContent = `${state.percent} % · ${labels[state.status]}`;
             $card.querySelector('progress').value = state.percent;
             $card.querySelector('[data-job-eta]').textContent = state.eta || 'Noch nicht abschätzbar';
+            $card.querySelector('[data-job-last-run]').textContent = state.last_run;
             $card.querySelector('[data-job-count]').textContent =
                 `${state.completed} / ${state.total}${state.estimated ? ' (geschätzt)' : ''} · ${state.errors} Fehler`;
             $card.querySelector('[data-job-action="reset"]').disabled = resets.has(job);
