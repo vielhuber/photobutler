@@ -184,7 +184,7 @@ export function initializeGallery(navigatePage) {
         let run = slideshowRun;
         if (scheduledSlideshowRun === run) return;
         scheduledSlideshowRun = run;
-        let deadline = performance.now() + 6000;
+        let deadline = performance.now() + 18000;
         try {
             let nextIndex = currentIndex + 1 + (overviewSlideshow ? Math.floor(Math.random() * 4) : 0);
             while (nextIndex >= $cards.length && $photoLoader.dataset.next) {
@@ -390,7 +390,7 @@ export function initializeGallery(navigatePage) {
                 if (matchMedia('(prefers-reduced-motion: reduce)').matches) $slideshowPrevious?.remove();
                 if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
                     $image.animate([{ transform: 'scale(1.035)' }, { transform: 'scale(1)' }], {
-                        duration: 6500,
+                        duration: 19500,
                         easing: 'ease-out',
                         fill: 'forwards'
                     });
@@ -400,7 +400,7 @@ export function initializeGallery(navigatePage) {
                         $outgoing.style.maskImage = 'url("#slideshow-dissolve-mask")';
                         let started = performance.now();
                         let dissolve = now => {
-                            let progress = Math.min(1, (now - started) / 1800);
+                            let progress = Math.min(1, (now - started) / 3600);
                             $dissolveAlpha.setAttribute('intercept', String(1 - progress * 37));
                             if (progress < 1) dissolveFrame = requestAnimationFrame(dissolve);
                             if (progress === 1) $outgoing.remove();
