@@ -556,15 +556,6 @@ dialog[open]::backdrop {
     font-size: 25px;
     z-index: 1;
 }
-#slideshow-stop {
-    top: 13px;
-    right: 13px;
-    width: auto;
-    height: auto;
-    padding: 8px 12px;
-    border-radius: 8px;
-    font-size: 14px;
-}
 .viewer-close {
     top: 13px;
     left: 13px;
@@ -914,6 +905,13 @@ textarea,
     margin-right: 6px;
 }
 
+.slideshow-background,
+#slideshow-date {
+    display: none;
+}
+#slideshow-dissolve-mask {
+    mask-type: alpha;
+}
 #viewer.slideshow {
     transition: none;
     transform: none;
@@ -923,7 +921,7 @@ textarea,
     max-height: none;
     margin: 0;
     border-radius: 0;
-    background: black;
+    background: var(--paper);
 }
 #viewer.slideshow .viewer-layout {
     display: block;
@@ -957,18 +955,46 @@ textarea,
 }
 #viewer.slideshow .viewer-stage {
     height: 100dvh;
-    background: black;
+    background: var(--paper);
     overflow: hidden;
 }
 #viewer.slideshow #viewer-image {
     position: relative;
+    z-index: 1;
 }
-#viewer.slideshow .viewer-stage[data-preview-state='loading'] #viewer-image {
-    opacity: 0;
+#viewer.slideshow .slideshow-background {
+    display: block;
+    position: absolute;
+    inset: 0;
+    object-fit: cover;
+    filter: blur(24px) brightness(0.75);
+    transform: scale(1.12);
 }
 #viewer.slideshow .slideshow-previous {
     position: absolute;
     inset: 0;
+    z-index: 2;
+    pointer-events: none;
+}
+#viewer.slideshow .slideshow-previous > img:not(.slideshow-background) {
+    position: relative;
+}
+#viewer.slideshow #slideshow-date {
+    display: block;
+    position: absolute;
+    bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 3;
+    padding: 8px 16px;
+    border: 1px solid #ffffff30;
+    border-radius: 20px;
+    background: #15201b55;
+    backdrop-filter: blur(12px);
+    color: white;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    text-shadow: 0 1px 3px #0009;
     pointer-events: none;
 }
 #viewer.slideshow .viewer-info,

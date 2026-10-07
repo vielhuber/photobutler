@@ -80,7 +80,7 @@ export function initializeGallery(navigatePage) {
         } catch {}
     });
 
-    let previewSelector = '[data-preview-state] > img:not(.slideshow-previous)';
+    let previewSelector = '[data-preview-state] > img:not(.slideshow-background)';
     function updatePreview($image) {
         let state =
             !$image.getAttribute('src') || !$image.complete ? 'loading' : $image.naturalWidth > 0 ? 'ready' : 'error';
@@ -95,6 +95,13 @@ export function initializeGallery(navigatePage) {
             eventName,
             event => {
                 if (event.target.matches?.(previewSelector)) updatePreview(event.target);
+                if (event.target === $image) {
+                    schedulePreloads();
+                    if (eventName === 'load') {
+                        positionFaces();
+                        scheduleSlideshow();
+                    }
+                }
             },
             { capture: true, signal: lifecycle.signal }
         );
@@ -104,6 +111,9 @@ export function initializeGallery(navigatePage) {
     let $viewer = document.querySelector('#viewer');
     let $cards = [...document.querySelectorAll('[data-photo]')];
     let $image = document.querySelector('#viewer-image');
+    let $slideshowBackground = document.querySelector('#slideshow-background');
+    let $slideshowDate = document.querySelector('#slideshow-date');
+    let $dissolveAlpha = document.querySelector('#slideshow-dissolve-alpha');
     let $title = document.querySelector('#viewer-title');
     let $date = document.querySelector('#viewer-date');
     let $description = document.querySelector('#viewer-description');
@@ -119,8 +129,9 @@ export function initializeGallery(navigatePage) {
     let overviewSlideshow = false;
     let $slideshowPrevious = null;
     let slideshowRun = 0;
+    let scheduledSlideshowRun = -1;
     let slideTimer = null;
-    let $slideshowStop = document.querySelector('#slideshow-stop');
+    let dissolveFrame = null;
     let ratingsPending = 0;
     let ratingVersion = 0;
     let ratingsSettled = null;
@@ -139,20 +150,42 @@ export function initializeGallery(navigatePage) {
         slideshowRun++;
         clearTimeout(slideTimer);
         slideTimer = null;
-        $slideshowStop.hidden = true;
         $viewer.classList.remove('slideshow');
+        cancelAnimationFrame(dissolveFrame);
         $slideshowPrevious?.remove();
         $slideshowPrevious = null;
+        $slideshowBackground.removeAttribute('src');
+        $slideshowDate.textContent = '';
         $image.getAnimations().forEach(animation => animation.cancel());
         if (wasPlaying && document.fullscreenElement) document.exitFullscreen().catch(() => {});
     }
 
-    function scheduleSlideshow() {
+    async function loadSlideshowPhoto(id) {
+        let $loadedImage = new Image();
+        let $background = new Image();
+        $loadedImage.fetchPriority = 'high';
+        $loadedImage.src = $background.src = `?photo=${id}&size=original`;
+        let decoded = Promise.all([$loadedImage.decode(), $background.decode()]).catch(async () => {
+            $loadedImage.src = $background.src = `?photo=${id}&size=display`;
+            await Promise.all([$loadedImage.decode(), $background.decode()]);
+        });
+        let [photo] = await Promise.all([
+            fetch(`?detail=${id}`, { signal: lifecycle.signal }).then(response => {
+                if (!response.ok) throw new Error('Das Foto konnte nicht geladen werden. Bitte neu anmelden.');
+                return response.json();
+            }),
+            decoded
+        ]);
+        return { photo, $image: $loadedImage, $background };
+    }
+
+    async function scheduleSlideshow() {
         if (!slideshow || !currentPhoto || !$image.complete || !$image.naturalWidth) return;
-        clearTimeout(slideTimer);
         let run = slideshowRun;
-        slideTimer = setTimeout(async () => {
-            if (!slideshow || run !== slideshowRun) return;
+        if (scheduledSlideshowRun === run) return;
+        scheduledSlideshowRun = run;
+        let deadline = performance.now() + 6000;
+        try {
             let nextIndex = currentIndex + 1 + (overviewSlideshow ? Math.floor(Math.random() * 4) : 0);
             while (nextIndex >= $cards.length && $photoLoader.dataset.next) {
                 if (photosLoading) {
@@ -163,19 +196,29 @@ export function initializeGallery(navigatePage) {
                 await loadMorePhotos();
                 if (!slideshow || run !== slideshowRun) return;
                 if (photoLoadFailed) {
-                    closePhoto();
-                    $photoLoadMessage.textContent = 'Slideshow gestoppt: Weitere Fotos konnten nicht geladen werden.';
-                    return;
+                    throw new Error('Slideshow gestoppt: Weitere Fotos konnten nicht geladen werden.');
                 }
             }
-            if (nextIndex >= $cards.length && !overviewSlideshow) {
+            let finished = nextIndex >= $cards.length && !overviewSlideshow;
+            if (nextIndex >= $cards.length) nextIndex = 0;
+            let id = Number($cards[nextIndex].dataset.photo);
+            let prepared = finished ? null : await loadSlideshowPhoto(id);
+            if (!slideshow || run !== slideshowRun) return;
+            await new Promise(resolve => {
+                slideTimer = setTimeout(resolve, Math.max(0, deadline - performance.now()));
+            });
+            if (!slideshow || run !== slideshowRun) return;
+            if (finished) {
                 closePhoto();
                 $photoLoadMessage.textContent = 'Slideshow beendet.';
                 return;
             }
-            if (nextIndex >= $cards.length) nextIndex = 0;
-            await openPhoto($cards[nextIndex].dataset.photo);
-        }, 6000);
+            await openPhoto(id, true, prepared);
+        } catch (error) {
+            if (!slideshow || run !== slideshowRun) return;
+            closePhoto();
+            $photoLoadMessage.textContent = 'Slideshow gestoppt: ' + error.message;
+        }
     }
 
     async function startSlideshow(allPhotos = false) {
@@ -201,18 +244,23 @@ export function initializeGallery(navigatePage) {
         slideshow = true;
         overviewSlideshow = allPhotos;
         $viewer.classList.add('slideshow');
-        $slideshowStop.hidden = false;
         await openPhoto($cards[0].dataset.photo);
     }
 
     $sidebar.addEventListener('click', event => {
         if (event.target.closest('#nav-slideshow')) startSlideshow(true);
     });
-    $slideshowStop.addEventListener('click', closePhoto);
     document.addEventListener(
         'fullscreenchange',
         () => {
             if (slideshow && !document.fullscreenElement) closePhoto();
+        },
+        { signal: lifecycle.signal }
+    );
+    document.addEventListener(
+        'keydown',
+        event => {
+            if (event.key === 'Escape' && slideshow && !$viewer.open) closePhoto();
         },
         { signal: lifecycle.signal }
     );
@@ -234,45 +282,49 @@ export function initializeGallery(navigatePage) {
     window.addEventListener('resize', schedulePreloads, { signal: lifecycle.signal });
     let preloadObserver = new ResizeObserver(schedulePreloads);
     preloadObserver.observe($main);
-    $image.addEventListener('load', () => {
-        schedulePreloads();
-        if (slideshow) {
-            let $previousImage = $slideshowPrevious;
-            if (matchMedia('(prefers-reduced-motion: reduce)').matches) $previousImage?.remove();
-            if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-                $image.animate(
-                    [
-                        { opacity: 0, transform: 'scale(0.98)' },
-                        { opacity: 1, transform: 'scale(1)', offset: 0.17 },
-                        { opacity: 1, transform: 'scale(1.025)' }
-                    ],
-                    { duration: 6500, easing: 'ease-out', fill: 'forwards' }
-                );
-                $previousImage?.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 1100 }).finished.then(
-                    () => $previousImage.remove(),
-                    () => {}
-                );
-            }
-        }
-        scheduleSlideshow();
-    });
-    $image.addEventListener('error', schedulePreloads);
     schedulePreloads();
 
-    async function openPhoto(id, updateHistory = true) {
+    async function openPhoto(id, updateHistory = true, prepared = null) {
         id = Number(id);
         if (!Number.isSafeInteger(id) || id < 1) return;
         slideshowRun++;
         clearTimeout(slideTimer);
+        let request = ++requestNumber;
+        if (slideshow && !prepared) {
+            try {
+                prepared = await loadSlideshowPhoto(id);
+            } catch {
+                if (request !== requestNumber) return;
+                closePhoto();
+                $photoLoadMessage.textContent = 'Slideshow gestoppt: Bild konnte nicht geladen werden.';
+                return;
+            }
+            if (request !== requestNumber || !slideshow) return;
+        }
+        cancelAnimationFrame(dissolveFrame);
         $slideshowPrevious?.remove();
         $slideshowPrevious = null;
-        if (slideshow && $image.complete && $image.naturalWidth) {
-            $slideshowPrevious = $image.cloneNode();
-            $slideshowPrevious.removeAttribute('id');
-            $slideshowPrevious.className = 'slideshow-previous';
-            $slideshowPrevious.alt = '';
-            $slideshowPrevious.setAttribute('aria-hidden', 'true');
-            $image.before($slideshowPrevious);
+        if (prepared) {
+            let $previousImage = $image;
+            let $previousBackground = $slideshowBackground;
+            $image.replaceWith(prepared.$image);
+            $slideshowBackground.replaceWith(prepared.$background);
+            $image = prepared.$image;
+            $image.id = 'viewer-image';
+            $slideshowBackground = prepared.$background;
+            $slideshowBackground.id = 'slideshow-background';
+            $slideshowBackground.className = 'slideshow-background';
+            $slideshowBackground.alt = '';
+            $slideshowBackground.setAttribute('aria-hidden', 'true');
+            if ($viewer.open && $previousImage.complete && $previousImage.naturalWidth) {
+                $previousImage.removeAttribute('id');
+                $previousBackground.removeAttribute('id');
+                $slideshowPrevious = document.createElement('div');
+                $slideshowPrevious.className = 'slideshow-previous';
+                $slideshowPrevious.setAttribute('aria-hidden', 'true');
+                $slideshowPrevious.append($previousBackground, $previousImage);
+                $image.parentElement.append($slideshowPrevious);
+            }
         }
         $image.getAnimations().forEach(animation => animation.cancel());
         currentIndex = $cards.findIndex($card => Number($card.dataset.photo) === id);
@@ -283,7 +335,6 @@ export function initializeGallery(navigatePage) {
             if (alreadyOpen) history.replaceState(history.state, '', url);
             if (!alreadyOpen) history.pushState({ photoViewer: true }, '', url);
         }
-        let request = ++requestNumber;
         currentPhoto = null;
         $message.textContent = '';
         $title.textContent = 'Lädt …';
@@ -298,27 +349,26 @@ export function initializeGallery(navigatePage) {
         $hoveredCard = null;
         preloader.update($cards, currentIndex, true);
         $image.fetchPriority = 'high';
-        $image.onerror = () => {
-            $image.onerror = slideshow
-                ? () => {
-                      $image.onerror = null;
-                      if (slideshow) {
-                          closePhoto();
-                          $photoLoadMessage.textContent = 'Slideshow gestoppt: Bild konnte nicht geladen werden.';
-                      }
-                  }
-                : null;
-            $image.src = `?photo=${id}&size=display`;
-        };
-        $image.src = `?photo=${id}&size=original`;
+        if (!prepared) {
+            $image.onerror = () => {
+                $image.onerror = null;
+                $image.src = `?photo=${id}&size=display`;
+            };
+            $image.src = `?photo=${id}&size=original`;
+        }
         updatePreview($image);
         if (!$viewer.open) $viewer.showModal();
         schedulePreloads();
         try {
-            let response = await fetch(`?detail=${id}`, { signal: lifecycle.signal });
-            if (!response.ok)
-                throw new Error('Das Foto konnte nicht geladen werden. Bitte neu anmelden oder die Seite neu laden.');
-            let photo = await response.json();
+            let photo = prepared?.photo;
+            if (!photo) {
+                let response = await fetch(`?detail=${id}`, { signal: lifecycle.signal });
+                if (!response.ok)
+                    throw new Error(
+                        'Das Foto konnte nicht geladen werden. Bitte neu anmelden oder die Seite neu laden.'
+                    );
+                photo = await response.json();
+            }
             if (request !== requestNumber) return;
             currentPhoto = photo;
             renderFaces(photo);
@@ -333,6 +383,32 @@ export function initializeGallery(navigatePage) {
             $favorite.textContent = photo.favorite ? '♥ Favorit entfernen' : '♡ Als Favorit';
             $favorite.disabled = false;
             $download.href = `?photo=${photo.id}&size=original&download=1`;
+            if (slideshow) {
+                let [year, month, day] = photo.taken.slice(0, 10).split('-');
+                $slideshowDate.dateTime = photo.taken.slice(0, 10);
+                $slideshowDate.textContent = `${day}.${month}.${year}`;
+                if (matchMedia('(prefers-reduced-motion: reduce)').matches) $slideshowPrevious?.remove();
+                if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                    $image.animate([{ transform: 'scale(1.035)' }, { transform: 'scale(1)' }], {
+                        duration: 6500,
+                        easing: 'ease-out',
+                        fill: 'forwards'
+                    });
+                    if ($slideshowPrevious) {
+                        let $outgoing = $slideshowPrevious;
+                        $dissolveAlpha.setAttribute('intercept', '1');
+                        $outgoing.style.maskImage = 'url("#slideshow-dissolve-mask")';
+                        let started = performance.now();
+                        let dissolve = now => {
+                            let progress = Math.min(1, (now - started) / 1800);
+                            $dissolveAlpha.setAttribute('intercept', String(1 - progress * 37));
+                            if (progress < 1) dissolveFrame = requestAnimationFrame(dissolve);
+                            if (progress === 1) $outgoing.remove();
+                        };
+                        dissolveFrame = requestAnimationFrame(dissolve);
+                    }
+                }
+            }
             scheduleSlideshow();
         } catch (error) {
             if (request === requestNumber) {
@@ -416,7 +492,6 @@ export function initializeGallery(navigatePage) {
             $box.style.height = `${face.box[3] * height}px`;
         });
     }
-    $image.addEventListener('load', positionFaces, { signal: lifecycle.signal });
     window.addEventListener('resize', positionFaces, { signal: lifecycle.signal });
     for (let type of ['pointerover', 'pointerout']) {
         $viewer.addEventListener(
