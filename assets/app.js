@@ -224,20 +224,14 @@ export function initializeGallery(navigatePage) {
                     throw new Error('Slideshow gestoppt: Weitere Fotos konnten nicht geladen werden.');
                 }
             }
-            let finished = nextIndex >= $cards.length && !overviewSlideshow;
             if (nextIndex >= $cards.length) nextIndex = 0;
             let id = Number($cards[nextIndex].dataset.photo);
-            let prepared = finished ? null : await loadSlideshowPhoto(id);
+            let prepared = await loadSlideshowPhoto(id);
             if (!slideshow || run !== slideshowRun) return;
             await new Promise(resolve => {
                 slideTimer = setTimeout(resolve, Math.max(0, deadline - performance.now()));
             });
             if (!slideshow || run !== slideshowRun) return;
-            if (finished) {
-                closePhoto();
-                $photoLoadMessage.textContent = 'Slideshow beendet.';
-                return;
-            }
             await openPhoto(id, true, prepared);
         } catch (error) {
             if (!slideshow || run !== slideshowRun) return;
