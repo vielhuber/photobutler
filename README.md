@@ -128,6 +128,8 @@ a wrong token returns 403, a missing or too short `CRON_SECRET` 503. the token i
 
 signing in sets a host-only, HttpOnly, SameSite=Strict cookie for a fixed 365 days (Secure over HTTPS). it contains only a random 256-bit token; SQLite stores its keyed hash and expiry. requests validate it independently of PHP session storage, so browser restarts and server session cleanup do not end the login. the short-lived JWT remains only the existing sign-in handshake, not the year-long credential.
 
+the login form obtains a fresh CSRF token immediately before submitting credentials, so a restored PWA page can sign in after its temporary PHP session has expired. once signed in, CSRF tokens are keyed to the persistent browser token and remain valid after server session cleanup, including for an already open page. CSRF checks and session-id regeneration stay enabled.
+
 existing sessions are not silently extended: sign out and sign in once after this update to start the year. ordinary visits do not renew the deadline. logout revokes this browser's token server-side and deletes its cookies; changing AUTH_USERNAME, AUTH_PASSWORD or JWT_SECRET invalidates all logins. deleting cookies, private browsing, browser retention policies or loss of the token database may require an earlier sign-in. a stolen persistent cookie grants access until expiry or revocation, so use HTTPS and only stay signed in on trusted devices.
 
 authentication checks use `composer test -- --filter AuthenticationTest`.

@@ -590,7 +590,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
     }
 
     /**
-     * Serve the gallery with revocable persistent authentication and session-bound CSRF protection.
+     * Keep authentication and its CSRF protection valid independently of PHP session cleanup.
      */
     public function run(): void
     {
@@ -706,7 +706,9 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         if ($remembered && ($_SESSION['remember_hash'] ?? '') !== $rememberHash) {
             session_regenerate_id(true);
             $_SESSION['remember_hash'] = $rememberHash;
-            $_SESSION['csrf'] = $csrf = bin2hex(random_bytes(32));
+        }
+        if ($remembered) {
+            $_SESSION['csrf'] = $csrf = hash_hmac('sha256', "csrf\0" . $rememberHash, $_SERVER['JWT_SECRET']);
         }
         $authenticated = $remembered || $this->isLoggedIn($_SESSION['access_token'] ?? '');
         $cookieOptions = [
@@ -768,7 +770,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
                 setcookie('photobutler_remember', $rememberToken, ['expires' => $expires] + $cookieOptions);
                 unset($_SESSION['access_token']);
                 $_SESSION['remember_hash'] = $tokenHash;
-                $_SESSION['csrf'] = bin2hex(random_bytes(32));
+                $_SESSION['csrf'] = hash_hmac('sha256', "csrf\0" . $tokenHash, $_SERVER['JWT_SECRET']);
                 header('Content-Type: application/json');
                 echo json_encode(['success' => true]);
                 return;
