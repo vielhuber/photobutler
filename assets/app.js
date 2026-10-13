@@ -786,6 +786,7 @@ export function initializeGallery(navigatePage) {
     if ($photoLoader.dataset.next) photoObserver.observe($photoLoader);
     function closePhoto() {
         stopSlideshow();
+        stopVideo();
         requestNumber++;
         currentPhoto = null;
         $viewer.close();
