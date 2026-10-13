@@ -394,6 +394,24 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
                     $attempt->execute([time(), $photo['id']]);
                     try {
                         $path = $this->imagePath((int) $photo['id'], cachedOnly: true);
+                        if (
+                            $path === null &&
+                            ($this->oneDrive?->photo((int) $photo['id'])['preview_fallback'] ?? null) !== null
+                        ) {
+                            $save = $this->database->prepare(
+                                "UPDATE photos SET status = 'done'
+                                WHERE id = ? AND modified = ? AND bytes = ? AND available = 1 AND priority = 0"
+                            );
+                            $save->execute([$photo['id'], $photo['modified'], $photo['bytes']]);
+                            $completed += (int) ($save->rowCount() > 0);
+                            $this->jobs->log(
+                                'tag',
+                                'Foto ' .
+                                    $photo['id'] .
+                                    ': KI-Bewertung übersprungen. OneDrive-Vorschau nicht verfügbar.'
+                            );
+                            continue;
+                        }
                         if ($path === null) {
                             throw new \RuntimeException('Vorschaubild nicht verfügbar.');
                         }
