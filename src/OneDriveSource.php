@@ -235,7 +235,7 @@ final class OneDriveSource
                         isset($item['remoteItem']) ||
                         !in_array(
                             strtolower(pathinfo($item['name'], PATHINFO_EXTENSION)),
-                            ['jpg', 'jpeg', 'png', 'webp', 'gif', 'm4v', 'mov', 'webm', '3gp', 'avi', 'mkv'],
+                            ['jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'm4v', 'mov', 'webm', '3gp', 'avi', 'mkv'],
                             true
                         )
                     ) {
