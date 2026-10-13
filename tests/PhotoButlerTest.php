@@ -936,9 +936,10 @@ final class PhotoButlerTest extends TestCase
                 iterator_to_array($document->querySelectorAll('#gallery-sort option'))
             )
         );
-        foreach ($document->querySelectorAll('.nav-item:not([href="?view=jobs"]), .brand') as $link) {
+        foreach ($document->querySelectorAll('.nav-item:not([href="?view=jobs"])') as $link) {
             $this->assertStringContainsString('sort=' . $sort, $link->getAttribute('href'));
         }
+        $this->assertSame('./', $document->querySelector('.brand')->getAttribute('href'));
         $this->assertNotNull($document->querySelector('.sidebar a[href="?view=jobs"]'));
         foreach (['#tag-count', '#worker-message', '#worker-progress', '#scan-start', '#tag-pending'] as $selector) {
             $this->assertNull($document->querySelector($selector));
@@ -955,7 +956,7 @@ final class PhotoButlerTest extends TestCase
             $document->querySelector('#gallery-relevance option[selected]')->getAttribute('value')
         );
         $this->assertNotNull($document->querySelector('#gallery-slideshow'));
-        $this->assertTrue($document->querySelector('#slideshow-stop')->hasAttribute('hidden'));
+        $this->assertNull($document->querySelector('#slideshow-stop'));
 
         $this->assertSame(
             '?photo=' . $photos[0]->id . '&size=display',
