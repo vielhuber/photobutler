@@ -80,17 +80,19 @@ export function initializeGallery(navigatePage) {
         } catch {}
     });
 
-    let previewSelector = '[data-preview-state] > img:not(.slideshow-background)';
+    let previewSelector = '[data-preview-state] > img:not(.slideshow-background), [data-preview-state] > video';
     function updatePreview($image) {
-        let state =
-            !$image.getAttribute('src') || !$image.complete ? 'loading' : $image.naturalWidth > 0 ? 'ready' : 'error';
+        let video = $image instanceof HTMLVideoElement;
+        let ready = video ? $image.readyState >= 1 : $image.complete && $image.naturalWidth > 0;
+        let failed = video ? $image.error !== null : $image.complete && !$image.naturalWidth;
+        let state = !$image.getAttribute('src') ? 'loading' : failed ? 'error' : ready ? 'ready' : 'loading';
         $image.parentElement.dataset.previewState = state;
         $image.parentElement.setAttribute('aria-busy', String(state === 'loading'));
     }
     function updatePreviews() {
         document.querySelectorAll(previewSelector).forEach(updatePreview);
     }
-    for (let eventName of ['load', 'error']) {
+    for (let eventName of ['load', 'loadedmetadata', 'error']) {
         document.addEventListener(
             eventName,
             event => {
@@ -124,6 +126,13 @@ export function initializeGallery(navigatePage) {
     let $download = document.querySelector('#viewer-download');
     let $previous = document.querySelector('.viewer-previous');
     let $next = document.querySelector('.viewer-next');
+    function stopVideo() {
+        if (!($image instanceof HTMLVideoElement)) return;
+        $image.pause();
+        $image.removeAttribute('src');
+        $image.load();
+    }
+    $viewer.addEventListener('close', stopVideo, { signal: lifecycle.signal });
     let csrf = document.querySelector('meta[name="csrf-token"]').content;
     let slideshow = false;
     let overviewSlideshow = false;
@@ -308,6 +317,7 @@ export function initializeGallery(navigatePage) {
     async function openPhoto(id, updateHistory = true, prepared = null) {
         id = Number(id);
         if (!Number.isSafeInteger(id) || id < 1) return;
+        stopVideo();
         slideshowRun++;
         clearTimeout(slideTimer);
         let request = ++requestNumber;
@@ -371,11 +381,8 @@ export function initializeGallery(navigatePage) {
         preloader.update($cards, currentIndex, true);
         $image.fetchPriority = 'high';
         if (!prepared) {
-            $image.onerror = () => {
-                $image.onerror = null;
-                $image.src = `?photo=${id}&size=display`;
-            };
-            $image.src = `?photo=${id}&size=original`;
+            $image.onerror = null;
+            $image.removeAttribute('src');
         }
         updatePreview($image);
         if (!$viewer.open) $viewer.showModal();
@@ -391,6 +398,30 @@ export function initializeGallery(navigatePage) {
                 photo = await response.json();
             }
             if (request !== requestNumber) return;
+            let video = photo.video && !slideshow;
+            if ($image.tagName.toLowerCase() !== (video ? 'video' : 'img')) {
+                let $media = document.createElement(video ? 'video' : 'img');
+                $media.id = 'viewer-image';
+                $image.replaceWith($media);
+                $image = $media;
+            }
+            if (!prepared) {
+                if (video) {
+                    $image.controls = true;
+                    $image.playsInline = true;
+                    $image.preload = 'metadata';
+                    $image.poster = `?photo=${id}&size=display`;
+                    $image.setAttribute('aria-label', photo.name);
+                }
+                if (!video) {
+                    $image.onerror = () => {
+                        $image.onerror = null;
+                        $image.src = `?photo=${id}&size=display`;
+                    };
+                }
+                $image.src = `?photo=${id}&size=original`;
+                updatePreview($image);
+            }
             currentPhoto = photo;
             renderFaces(photo);
             $title.textContent = photo.name;
@@ -849,6 +880,7 @@ export function initializeGallery(navigatePage) {
         },
         dispose() {
             stopSlideshow();
+            stopVideo();
             disposed = true;
             jobs.dispose();
             galleryVersion++;
