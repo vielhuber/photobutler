@@ -977,7 +977,8 @@ textarea,
     z-index: 2;
     pointer-events: none;
 }
-#viewer.slideshow .slideshow-previous > img:not(.slideshow-background) {
+#viewer.slideshow .slideshow-previous > img:not(.slideshow-background),
+#viewer.slideshow .slideshow-previous > video {
     position: relative;
 }
 #viewer.slideshow #slideshow-date {
