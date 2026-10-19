@@ -120,7 +120,7 @@ export function initializeGallery(navigatePage) {
     let $image = document.querySelector('#viewer-image');
     let $slideshowBackground = document.querySelector('#slideshow-background');
     let $slideshowDate = document.querySelector('#slideshow-date');
-    let $slideshowPinterestLink = document.querySelector('#slideshow-pinterest-link');
+    let $slideshowPinterestTitle = document.querySelector('#slideshow-pinterest-title');
     let $dissolveAlpha = document.querySelector('#slideshow-dissolve-alpha');
     let $title = document.querySelector('#viewer-title');
     let $date = document.querySelector('#viewer-date');
@@ -202,7 +202,7 @@ export function initializeGallery(navigatePage) {
         wakeLock?.release();
         wakeLock = null;
         $viewer.classList.remove('slideshow', 'pinterest-slideshow');
-        $slideshowPinterestLink.removeAttribute('href');
+        $slideshowPinterestTitle.textContent = '';
         cancelAnimationFrame(dissolveFrame);
         stopVideo($slideshowPrevious?.querySelector('video') ?? null);
         $slideshowPrevious?.remove();
@@ -475,7 +475,7 @@ export function initializeGallery(navigatePage) {
             }
             currentPhoto = photo;
             $title.textContent = photo.name;
-            if (pinterest) $slideshowPinterestLink.href = photo.link;
+            if (pinterest) $slideshowPinterestTitle.textContent = photo.name;
             if (!pinterest) {
                 renderFaces(photo);
                 $date.textContent = [

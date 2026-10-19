@@ -204,7 +204,7 @@ the AI rating and face recognition read only existing local JPEG or PNG thumbnai
 
 **Pinterest** is a separate, read-only gallery with board selection, infinite scrolling, a detail viewer, keyboard navigation and direct image links. It uses the existing PhotoButler login and layout, but never mixes Pins with the OneDrive catalog, ratings, persons or processing jobs. Tiles use a 4:3 aspect ratio; each Pin's Pinterest source remains available in its detail viewer instead of a separate link below the tile.
 
-Start the selected board's fullscreen slideshow with **Slideshow** at the top right. It shares the photo slideshow's display duration, background preloading, transitions, wake lock and endless repetition, loading further Pin pages only as needed. Escape ends playback. Both galleries have their own slideshow button; there is no slideshow entry in the sidebar. Pinterest attribution and a link to the current Pin remain visible during playback.
+Start the selected board's fullscreen slideshow with **Slideshow** at the top right. It shares the photo slideshow's display duration, background preloading, transitions, wake lock and endless repetition, loading further Pin pages only as needed. Escape ends playback. Both galleries have their own slideshow button; there is no slideshow entry in the sidebar. The current Pin's title appears in the same bottom-centered style as the photo slideshow's capture date; the Pinterest link remains available in the detail viewer.
 
 Register and obtain approval for a [Pinterest app](https://developers.pinterest.com/docs/getting-started/connect-app/), then add these settings to the private `.data/.env`:
 
