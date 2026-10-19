@@ -58,8 +58,8 @@ export function initializePinterest($main, navigatePage) {
             $board.replaceChildren(...result.boards.map(board => new Option(board.name, board.id)));
             $board.value = selectedBoard;
             $board.disabled = false;
-            $gallery.querySelector('#pinterest-count').textContent =
-                `${result.boards.find(board => board.id === selectedBoard).pinCount.toLocaleString('de-DE')} Pins laut Pinterest`;
+            $main.querySelector('#pinterest-count').textContent =
+                `${result.boards.find(board => board.id === selectedBoard).pinCount.toLocaleString('de-DE')} Pins`;
             let $boardLink = $gallery.querySelector('#pinterest-board-link');
             $boardLink.hidden = !result.url || selectedBoard !== result.selected;
             if (result.url) $boardLink.href = result.url;

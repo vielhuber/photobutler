@@ -58,7 +58,7 @@ $pinterestView ??= false;
         <section class="intro">
             <div><h1><?= $escape($title) ?></h1><?php if (
     $pinterestView
-): ?><p class="muted">Pins aus Deinen Pinnwänden, getrennt von Deinen Fotos.</p><?php endif; ?>
+): ?><p id="pinterest-count" class="muted"></p><?php endif; ?>
             <?php if (!$pinterestView): ?><p class="muted"<?php if (
     $matchedPhotos !== null
 ): ?> id="gallery-count" data-matched="<?= $matchedPhotos ?>" data-total="<?= (int) $stats[
