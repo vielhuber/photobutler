@@ -466,7 +466,7 @@ h2 {
     display: none;
 }
 .pinterest-grid .photo-card {
-    aspect-ratio: 0.8;
+    aspect-ratio: 4 / 3;
 }
 .pinterest-grid .photo-card img {
     object-fit: contain;
@@ -479,10 +479,6 @@ h2 {
     margin: 9px 0 4px;
     font-size: 12px;
     overflow-wrap: anywhere;
-}
-.pinterest-origin {
-    font-size: 11px;
-    color: var(--green);
 }
 .pinterest-viewer-controls {
     display: flex;

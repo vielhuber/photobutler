@@ -202,7 +202,7 @@ the AI rating and face recognition read only existing local JPEG or PNG thumbnai
 
 ### Pinterest gallery
 
-**Pinterest** is a separate, read-only gallery with board selection, infinite scrolling, a detail viewer, keyboard navigation and direct image links. It uses the existing PhotoButler login and layout, but never mixes Pins with the OneDrive catalog, ratings, persons, slideshow or processing jobs.
+**Pinterest** is a separate, read-only gallery with board selection, infinite scrolling, a detail viewer, keyboard navigation and direct image links. It uses the existing PhotoButler login and layout, but never mixes Pins with the OneDrive catalog, ratings, persons, slideshow or processing jobs. Tiles use a 4:3 aspect ratio; each Pin's Pinterest source remains available in its detail viewer instead of a separate link below the tile.
 
 Register and obtain approval for a [Pinterest app](https://developers.pinterest.com/docs/getting-started/connect-app/), then add these settings to the private `.data/.env`:
 

@@ -21,7 +21,6 @@ declare(strict_types=1) ?>
         <article class="pinterest-tile">
             <button class="photo-card" type="button" data-preview-state="loading" aria-busy="true"><img alt="" loading="lazy" referrerpolicy="no-referrer"></button>
             <p class="pinterest-caption"></p>
-            <a class="pinterest-origin" target="_blank" rel="noopener noreferrer">Pinterest ↗</a>
         </article>
     </template>
     <dialog id="pinterest-viewer" aria-labelledby="pinterest-title">

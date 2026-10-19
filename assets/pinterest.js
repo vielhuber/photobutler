@@ -97,7 +97,6 @@ export function initializePinterest($main, navigatePage) {
                 $preview.src = pin.thumbnail || '?asset=favicon.svg';
                 $preview.alt = pin.title;
                 $tile.querySelector('.pinterest-caption').textContent = pin.title;
-                $tile.querySelector('.pinterest-origin').href = pin.link;
                 $grid.append($tile);
             }
             bookmark = result.bookmark;
