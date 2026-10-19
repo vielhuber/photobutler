@@ -10,6 +10,7 @@ declare(strict_types=1) ?>
     ? ' selected'
     : '' ?>><?= $columns ?></option><?php endforeach; ?></select></label>
         <a id="pinterest-board-link" class="reset" href="https://www.pinterest.com/" target="_blank" rel="noopener noreferrer">Auf Pinterest öffnen ↗</a>
+        <button id="pinterest-slideshow" class="chip" type="button" disabled>Slideshow</button>
     </div>
     <p id="pinterest-count" class="muted"></p>
     <div id="pinterest-grid" class="photo-grid pinterest-grid" aria-busy="true"></div>

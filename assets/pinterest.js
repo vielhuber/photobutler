@@ -15,7 +15,7 @@ export function initializePinterest($main, navigatePage) {
     let pinOrder = [];
     let selectedBoard = '';
     let bookmark = null;
-    let loading = false;
+    let loading = null;
     let failed = false;
     let currentPin = '';
     let detailRequest = '';
@@ -77,14 +77,14 @@ export function initializePinterest($main, navigatePage) {
     }
 
     async function loadPins() {
-        if (loading) return;
-        loading = true;
+        if (loading) return loading;
         failed = false;
         $retry.hidden = true;
         $grid.setAttribute('aria-busy', 'true');
         $message.textContent = 'Pins werden geladen …';
+        loading = request({ pinterest: 'pins', board: selectedBoard, ...(bookmark ? { bookmark } : {}) });
         try {
-            let result = await request({ pinterest: 'pins', board: selectedBoard, ...(bookmark ? { bookmark } : {}) });
+            let result = await loading;
             for (let pin of result.pins) {
                 if (pinOrder.includes(pin.id)) continue;
                 pins.set(pin.id, pin);
@@ -99,6 +99,7 @@ export function initializePinterest($main, navigatePage) {
                 $tile.querySelector('.pinterest-caption').textContent = pin.title;
                 $grid.append($tile);
             }
+            $gallery.querySelector('#pinterest-slideshow').disabled = pinOrder.length === 0;
             bookmark = result.bookmark;
             $message.textContent =
                 pinOrder.length === 0
@@ -114,7 +115,7 @@ export function initializePinterest($main, navigatePage) {
             retryRequest = loadPins;
             $retry.hidden = false;
         } finally {
-            loading = false;
+            loading = null;
             $grid.setAttribute('aria-busy', 'false');
         }
     }
@@ -146,6 +147,7 @@ export function initializePinterest($main, navigatePage) {
     }
 
     async function syncPhoto() {
+        if (document.querySelector('#viewer').classList.contains('slideshow')) return;
         let id = new URL(location.href).searchParams.get('image');
         if (!id) {
             currentPin = '';
@@ -255,6 +257,15 @@ export function initializePinterest($main, navigatePage) {
 
     return {
         syncPhoto,
+        async slideshowPhoto(index) {
+            while (index >= pinOrder.length && bookmark) {
+                await loadPins();
+                if (failed || lifecycle.signal.aborted) throw new Error($message.textContent);
+            }
+            if (index >= pinOrder.length) index = 0;
+            let pin = pins.get(pinOrder[index]);
+            return { ...pin, index, name: pin.title, taken: '', video: false };
+        },
         dispose() {
             lifecycle.abort();
             observer.disconnect();

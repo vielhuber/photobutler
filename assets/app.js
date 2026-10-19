@@ -120,6 +120,7 @@ export function initializeGallery(navigatePage) {
     let $image = document.querySelector('#viewer-image');
     let $slideshowBackground = document.querySelector('#slideshow-background');
     let $slideshowDate = document.querySelector('#slideshow-date');
+    let $slideshowPinterestLink = document.querySelector('#slideshow-pinterest-link');
     let $dissolveAlpha = document.querySelector('#slideshow-dissolve-alpha');
     let $title = document.querySelector('#viewer-title');
     let $date = document.querySelector('#viewer-date');
@@ -152,7 +153,6 @@ export function initializeGallery(navigatePage) {
     }
     let csrf = document.querySelector('meta[name="csrf-token"]').content;
     let slideshow = false;
-    let overviewSlideshow = false;
     let wakeLock = null;
     let $slideshowPrevious = null;
     let slideshowRun = 0;
@@ -201,7 +201,8 @@ export function initializeGallery(navigatePage) {
         slideTimer = null;
         wakeLock?.release();
         wakeLock = null;
-        $viewer.classList.remove('slideshow');
+        $viewer.classList.remove('slideshow', 'pinterest-slideshow');
+        $slideshowPinterestLink.removeAttribute('href');
         cancelAnimationFrame(dissolveFrame);
         stopVideo($slideshowPrevious?.querySelector('video') ?? null);
         $slideshowPrevious?.remove();
@@ -212,11 +213,14 @@ export function initializeGallery(navigatePage) {
         if (wasPlaying && document.fullscreenElement) document.exitFullscreen().catch(() => {});
     }
 
-    async function loadSlideshowPhoto(id) {
+    async function loadSlideshowPhoto(id, photo = null) {
         let run = slideshowRun;
-        let response = await fetch(`?detail=${id}`, { signal: lifecycle.signal });
-        if (!response.ok) throw new Error('Das Foto konnte nicht geladen werden. Bitte neu anmelden.');
-        let photo = await response.json();
+        let pinterestPhoto = photo !== null;
+        if (!photo) {
+            let response = await fetch(`?detail=${id}`, { signal: lifecycle.signal });
+            if (!response.ok) throw new Error('Das Foto konnte nicht geladen werden. Bitte neu anmelden.');
+            photo = await response.json();
+        }
         if (!slideshow || run !== slideshowRun) throw new Error('Slideshow gestoppt.');
         let $loadedImage = photo.video ? createVideo(photo) : new Image();
         let $background = new Image();
@@ -236,8 +240,11 @@ export function initializeGallery(navigatePage) {
             return { photo, $image: $loadedImage, $background };
         }
         $loadedImage.fetchPriority = 'high';
-        $loadedImage.src = $background.src = `?photo=${id}&size=original`;
+        $loadedImage.src = $background.src = pinterestPhoto
+            ? photo.image || '?asset=favicon.svg'
+            : `?photo=${id}&size=original`;
         await Promise.all([$loadedImage.decode(), $background.decode()]).catch(async () => {
+            if (pinterestPhoto) throw new Error('Der Pinterest-Pin konnte nicht geladen werden.');
             $loadedImage.src = $background.src = `?photo=${id}&size=display`;
             await Promise.all([$loadedImage.decode(), $background.decode()]);
         });
@@ -260,8 +267,8 @@ export function initializeGallery(navigatePage) {
                 : Promise.resolve();
         let deadline = performance.now() + 18000;
         try {
-            let nextIndex = currentIndex + 1 + (overviewSlideshow ? Math.floor(Math.random() * 4) : 0);
-            while (nextIndex >= $cards.length && $photoLoader.dataset.next) {
+            let nextIndex = currentIndex + 1;
+            while (!pinterest && nextIndex >= $cards.length && $photoLoader.dataset.next) {
                 if (photosLoading) {
                     await new Promise(resolve => setTimeout(resolve, 250));
                     if (!slideshow || run !== slideshowRun) return;
@@ -273,9 +280,9 @@ export function initializeGallery(navigatePage) {
                     throw new Error('Slideshow gestoppt: Weitere Fotos konnten nicht geladen werden.');
                 }
             }
-            if (nextIndex >= $cards.length) nextIndex = 0;
-            let id = Number($cards[nextIndex].dataset.photo);
-            let prepared = await loadSlideshowPhoto(id);
+            if (!pinterest && nextIndex >= $cards.length) nextIndex = 0;
+            let id = pinterest ? nextIndex : Number($cards[nextIndex].dataset.photo);
+            let prepared = await loadSlideshowPhoto(id, pinterest ? await pinterest.slideshowPhoto(nextIndex) : null);
             if (!slideshow || run !== slideshowRun) return;
             if ($video) await finished;
             if (!$video)
@@ -291,12 +298,11 @@ export function initializeGallery(navigatePage) {
         }
     }
 
-    async function startSlideshow(allPhotos = false) {
+    async function startSlideshow() {
         stopSlideshow();
         let fullscreen = document.documentElement.requestFullscreen?.().catch(() => {});
         let url = new URL(location.href);
-        if (allPhotos) url.search = 'sort=newest&relevance=relevant';
-        if (allPhotos || Number(url.searchParams.get('page')) > 1) {
+        if (!pinterest && Number(url.searchParams.get('page')) > 1) {
             for (let key of ['page', 'offset', 'image']) url.searchParams.delete(key);
             try {
                 await navigatePage(url.href);
@@ -307,20 +313,17 @@ export function initializeGallery(navigatePage) {
             }
         }
         await fullscreen;
-        if (!$cards.length) {
+        if (!pinterest && !$cards.length) {
             if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
             return;
         }
         slideshow = true;
-        overviewSlideshow = allPhotos;
         $viewer.classList.add('slideshow');
+        $viewer.classList.toggle('pinterest-slideshow', Boolean(pinterest));
         keepSlideshowAwake();
-        await openPhoto($cards[0].dataset.photo);
+        await openPhoto(pinterest ? 0 : $cards[0].dataset.photo);
     }
 
-    $sidebar.addEventListener('click', event => {
-        if (event.target.closest('#nav-slideshow')) startSlideshow(true);
-    });
     document.addEventListener('visibilitychange', keepSlideshowAwake, { signal: lifecycle.signal });
     document.addEventListener(
         'fullscreenchange',
@@ -358,14 +361,15 @@ export function initializeGallery(navigatePage) {
 
     async function openPhoto(id, updateHistory = true, prepared = null) {
         id = Number(id);
-        if (!Number.isSafeInteger(id) || id < 1) return;
+        if (!Number.isSafeInteger(id) || id < (pinterest ? 0 : 1)) return;
+        if (pinterest && !slideshow) return;
         if (!slideshow) stopVideo();
         slideshowRun++;
         clearTimeout(slideTimer);
         let request = ++requestNumber;
         if (slideshow && !prepared) {
             try {
-                prepared = await loadSlideshowPhoto(id);
+                prepared = await loadSlideshowPhoto(id, pinterest ? await pinterest.slideshowPhoto(id) : null);
             } catch {
                 if (request !== requestNumber) return;
                 closePhoto();
@@ -411,7 +415,8 @@ export function initializeGallery(navigatePage) {
             if (!$slideshowPrevious) stopVideo($previousImage);
         }
         $image.getAnimations().forEach(animation => animation.cancel());
-        currentIndex = $cards.findIndex($card => Number($card.dataset.photo) === id);
+        currentIndex = pinterest ? prepared.photo.index : $cards.findIndex($card => Number($card.dataset.photo) === id);
+        if (pinterest) id = prepared.photo.id;
         if (updateHistory) {
             let url = new URL(location.href);
             let alreadyOpen = url.searchParams.has('image');
@@ -469,18 +474,21 @@ export function initializeGallery(navigatePage) {
                 updatePreview($image);
             }
             currentPhoto = photo;
-            renderFaces(photo);
             $title.textContent = photo.name;
-            $date.textContent = [
-                photo.taken.slice(0, 10),
-                photo.album,
-                ...(photo.width > 0 && photo.height > 0 ? [`${photo.width} × ${photo.height}`] : [])
-            ].join(' · ');
-            renderDescription(photo);
+            if (pinterest) $slideshowPinterestLink.href = photo.link;
+            if (!pinterest) {
+                renderFaces(photo);
+                $date.textContent = [
+                    photo.taken.slice(0, 10),
+                    photo.album,
+                    ...(photo.width > 0 && photo.height > 0 ? [`${photo.width} × ${photo.height}`] : [])
+                ].join(' · ');
+                renderDescription(photo);
+                $favorite.textContent = photo.favorite ? '♥ Favorit entfernen' : '♡ Als Favorit';
+                $favorite.disabled = false;
+                $download.href = `?photo=${photo.id}&size=original&download=1`;
+            }
             $image.alt = photo.description || photo.name;
-            $favorite.textContent = photo.favorite ? '♥ Favorit entfernen' : '♡ Als Favorit';
-            $favorite.disabled = false;
-            $download.href = `?photo=${photo.id}&size=original&download=1`;
             if (video) {
                 let $video = $image;
                 $video.autoplay = true;
@@ -493,13 +501,13 @@ export function initializeGallery(navigatePage) {
             if (slideshow) {
                 let [year, month, day] = photo.taken.slice(0, 10).split('-');
                 $slideshowDate.dateTime = photo.taken.slice(0, 10);
-                $slideshowDate.textContent = `${day}.${month}.${year}`;
+                $slideshowDate.textContent = photo.taken ? `${day}.${month}.${year}` : '';
                 if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
                     stopVideo($slideshowPrevious?.querySelector('video') ?? null);
                     $slideshowPrevious?.remove();
                 }
                 if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-                    if (!video)
+                    if (!video && !pinterest)
                         $image.animate([{ transform: 'scale(1.035)' }, { transform: 'scale(1)' }], {
                             duration: 19500,
                             easing: 'ease-out',
@@ -771,7 +779,7 @@ export function initializeGallery(navigatePage) {
             await savePhoto('priority', { id: Number($card.dataset.photo) }, priority);
             return;
         }
-        if (event.target.closest('#gallery-slideshow')) {
+        if (event.target.closest('#gallery-slideshow, #pinterest-slideshow')) {
             await startSlideshow();
             return;
         }
@@ -781,7 +789,7 @@ export function initializeGallery(navigatePage) {
     });
 
     let $photoLoader = document.querySelector('#photo-loader');
-    let $photoLoadMessage = document.querySelector('#photo-load-message');
+    let $photoLoadMessage = document.querySelector('#pinterest-message, #photo-load-message');
     let $photoRetry = document.querySelector('#photo-retry');
     let photosLoading = false;
     let photoLoadDeferred = false;
@@ -878,22 +886,25 @@ export function initializeGallery(navigatePage) {
         if (['TEXTAREA', 'INPUT'].includes(event.target.tagName)) return;
         if (event.key === 'ArrowLeft') {
             event.preventDefault();
-            openPhoto($cards[currentIndex - 1]?.dataset.photo);
+            openPhoto(pinterest ? currentIndex - 1 : $cards[currentIndex - 1]?.dataset.photo);
         }
         if (event.key === 'ArrowRight') {
             event.preventDefault();
-            openPhoto(currentIndex >= 0 ? $cards[currentIndex + 1]?.dataset.photo : null);
+            openPhoto(
+                pinterest ? currentIndex + 1 : currentIndex >= 0 ? $cards[currentIndex + 1]?.dataset.photo : null
+            );
         }
     });
     $favorite.addEventListener('click', () => savePhoto('favorite'));
 
     return {
         syncPhoto() {
+            stopSlideshow();
             if (pinterest) {
+                $viewer.close();
                 pinterest.syncPhoto();
                 return;
             }
-            stopSlideshow();
             let id = new URL(location.href).searchParams.get('image');
             if (id && ($cards.some($card => $card.dataset.photo === id) || $viewer.dataset.selectedPhoto === id)) {
                 openPhoto(id, false);
@@ -933,7 +944,7 @@ export function initializeGallery(navigatePage) {
             $grid = document.querySelector('.photo-grid');
             $cards = [...document.querySelectorAll('[data-photo]')];
             $photoLoader = document.querySelector('#photo-loader');
-            $photoLoadMessage = document.querySelector('#photo-load-message');
+            $photoLoadMessage = document.querySelector('#pinterest-message, #photo-load-message');
             $photoRetry = document.querySelector('#photo-retry');
             photosLoading = false;
             photoLoadDeferred = false;

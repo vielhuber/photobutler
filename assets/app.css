@@ -122,8 +122,7 @@ button:disabled {
     color: #90988f;
     margin: 12px 12px;
 }
-.nav-item,
-.nav-action {
+.nav-item {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -132,20 +131,11 @@ button:disabled {
     color: #6a776b;
     margin: 3px 0;
 }
-.nav-action {
-    width: 100%;
-    border: 0;
-    background: none;
-    font: inherit;
-    text-align: left;
-}
-.nav-item > span:first-child,
-.nav-action > span:first-child {
+.nav-item > span:first-child {
     font-size: 21px;
     line-height: 1;
 }
-.sidebar > nav[aria-label='Bibliothek'] .nav-item > span:first-child,
-.sidebar > nav[aria-label='Bibliothek'] .nav-action > span:first-child {
+.sidebar > nav[aria-label='Bibliothek'] .nav-item > span:first-child {
     flex: 0 0 24px;
     min-width: 0;
     text-align: center;
@@ -156,7 +146,6 @@ button:disabled {
     font-size: 11px;
 }
 .nav-item:hover,
-.nav-action:hover,
 .nav-item.active {
     background: #e0e8dc;
     color: #34503d;
@@ -747,8 +736,7 @@ textarea,
         flex-wrap: wrap;
         gap: 10px;
     }
-    .nav-item,
-    .nav-action {
+    .nav-item {
         width: auto;
         font-size: 12px;
         padding: 8px 12px;
@@ -937,7 +925,8 @@ textarea,
 }
 
 .slideshow-background,
-#slideshow-date {
+#slideshow-date,
+#slideshow-pinterest-link {
     display: none;
 }
 #slideshow-dissolve-mask {
@@ -1034,4 +1023,16 @@ textarea,
 #viewer.slideshow .viewer-previous,
 #viewer.slideshow .viewer-next {
     display: none;
+}
+#viewer.pinterest-slideshow .viewer-stage {
+    height: calc(100dvh - 44px - env(safe-area-inset-bottom, 0px));
+}
+#viewer.pinterest-slideshow #slideshow-date {
+    display: none;
+}
+#viewer.pinterest-slideshow #slideshow-pinterest-link {
+    display: block;
+    padding: 12px;
+    text-align: center;
+    font-size: 12px;
 }
