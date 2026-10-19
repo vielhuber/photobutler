@@ -76,6 +76,7 @@ $pinterestView ??= false;
             require __DIR__ . '/pinterest.php';
         } ?>
         <div<?= $peopleView || $jobsView || $pinterestView ? ' hidden' : '' ?>>
+        <div class="gallery-toolbar">
         <form id="gallery-filters" class="gallery-filters"><label class="person-filter"><select id="gallery-relevance" aria-label="Relevanz"><option value="all"<?= $relevance ===
         'all'
             ? ' selected'
@@ -104,6 +105,8 @@ $pinterestView ??= false;
                 $from !== '' ||
                 $to !== ''
             ): ?><a class="reset" href="?sort=<?= $escape($sort) ?>">Filter zurücksetzen ×</a><?php endif; ?>
+        </form>
+        <div class="gallery-controls">
             <label class="gallery-view" for="gallery-columns"><select id="gallery-columns" aria-label="Spalten"><option value="3">3</option><option value="4">4</option><option value="5" selected>5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option></select></label><label class="gallery-view gallery-sorting" for="gallery-sort"><select id="gallery-sort" aria-label="Sortierung" data-seed="<?= $sort ===
             'random'
                 ? $escape($seed)
@@ -115,7 +118,9 @@ $pinterestView ??= false;
 ) ?></option><?php endforeach; ?></select></label><button id="gallery-slideshow" class="chip" type="button"<?= $photos ===
 []
     ? ' disabled'
-    : '' ?>>Slideshow</button></form>
+    : '' ?>>Slideshow</button>
+        </div>
+        </div>
         <section class="photos-section">
             <div class="photo-grid">
                 <?php foreach (
