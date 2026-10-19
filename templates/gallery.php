@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 $jobsView ??= false;
+$pinterestView ??= false;
 ?>
 <!doctype html>
 <html lang="de">
@@ -23,12 +24,17 @@ $jobsView ??= false;
         <a class="brand" href="./"><span class="brand-icon" aria-hidden="true">▧</span> photobutler<span class="brand-dot">.</span></a>
         <p class="nav-label">BIBLIOTHEK</p>
         <nav aria-label="Bibliothek">
-            <a class="nav-item <?= !$jobsView && !$peopleView && $album === '' ? 'active' : '' ?>" href="?<?= $escape(
+            <a class="nav-item <?= !$jobsView && !$peopleView && !$pinterestView && $album === ''
+                ? 'active'
+                : '' ?>" href="?<?= $escape(
     $galleryPreferences
 ) ?>"><span aria-hidden="true">▦</span> Fotos <small><?= $stats['total'] ?></small></a>
             <button id="nav-slideshow" class="nav-action" type="button"<?= (int) $stats['favorites'] === 0
                 ? ' disabled'
                 : '' ?>><span aria-hidden="true">▷</span> Slideshow</button>
+            <a class="nav-item <?= $pinterestView ? 'active' : '' ?>" href="?view=pinterest&amp;<?= $escape(
+    $galleryPreferences
+) ?>"><span aria-hidden="true">P</span> Pinterest</a>
             <a class="nav-item <?= $peopleView ? 'active' : '' ?>" href="?view=persons&amp;<?= $escape(
     $galleryPreferences
 ) ?>"><span aria-hidden="true">♙</span> Personen <small><?= $shownPersons ?></small></a>
@@ -42,15 +48,26 @@ $jobsView ??= false;
     </aside>
     <main class="main">
         <header class="topbar"><span>Bibliothek <span class="muted">/ <?= $escape(
-            $jobsView ? 'Jobs' : ($peopleView ? 'Personen' : ($album !== '' ? basename($album) : 'Fotos'))
+            $pinterestView
+                ? 'Pinterest'
+                : ($jobsView
+                    ? 'Jobs'
+                    : ($peopleView
+                        ? 'Personen'
+                        : ($album !== ''
+                            ? basename($album)
+                            : 'Fotos')))
         ) ?></span></span></header>
         <section class="intro">
-            <div><h1><?= $escape($title) ?></h1><p class="muted"<?php if (
+            <div><h1><?= $escape($title) ?></h1><?php if (
+    $pinterestView
+): ?><p class="muted">Pins aus Deinen Pinnwänden, getrennt von Deinen Fotos.</p><?php endif; ?>
+            <?php if (!$pinterestView): ?><p class="muted"<?php if (
     $matchedPhotos !== null
 ): ?> id="gallery-count" data-matched="<?= $matchedPhotos ?>" data-total="<?= (int) $stats[
     'total'
 ] ?>"<?php endif; ?>><?= ($matchedPhotos === null ? '' : number_format($matchedPhotos, 0, ',', '.') . ' von ') .
-    number_format((int) $stats['total'], 0, ',', '.') ?> Fotos</p></div>
+    number_format((int) $stats['total'], 0, ',', '.') ?> Fotos</p><?php endif; ?></div>
         </section>
         <?php if ($jobsView) {
             require __DIR__ . '/jobs.php';
@@ -58,7 +75,10 @@ $jobsView ??= false;
         <?php if ($peopleView) {
             require __DIR__ . '/persons.php';
         } ?>
-        <div<?= $peopleView || $jobsView ? ' hidden' : '' ?>>
+        <?php if ($pinterestView) {
+            require __DIR__ . '/pinterest.php';
+        } ?>
+        <div<?= $peopleView || $jobsView || $pinterestView ? ' hidden' : '' ?>>
         <form id="gallery-filters" class="gallery-filters"><label class="person-filter"><select id="gallery-relevance" aria-label="Relevanz"><option value="all"<?= $relevance ===
         'all'
             ? ' selected'

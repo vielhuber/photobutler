@@ -15,6 +15,8 @@
                 let $option = document.querySelector(`#gallery-columns option[value="${columns}"]`);
                 if (!$option) return;
                 $option.selected = true;
+                let $pinterestOption = document.querySelector(`#pinterest-columns option[value="${columns}"]`);
+                if ($pinterestOption) $pinterestOption.selected = true;
                 observer.disconnect();
             });
             observer.observe(document.documentElement, { childList: true, subtree: true });

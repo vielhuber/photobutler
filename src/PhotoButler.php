@@ -597,7 +597,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         header('X-Content-Type-Options: nosniff');
         header('Referrer-Policy: no-referrer');
         header(
-            "Content-Security-Policy: default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+            "Content-Security-Policy: default-src 'self'; img-src 'self' https://i.pinimg.com; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         );
         header('Cache-Control: no-store');
         $requestPath = rawurldecode((string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
@@ -625,6 +625,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
                     'preferences.js',
                     'preloader.js',
                     'jobs.js',
+                    'pinterest.js',
                     'favicon.svg',
                     'manifest.webmanifest',
                     'icon-192.png',
@@ -894,7 +895,13 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         }
         $escape = fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         if (!$authenticated) {
-            if (isset($_GET['photo']) || isset($_GET['detail']) || isset($_GET['face']) || isset($_GET['jobs'])) {
+            if (
+                isset($_GET['photo']) ||
+                isset($_GET['detail']) ||
+                isset($_GET['face']) ||
+                isset($_GET['jobs']) ||
+                isset($_GET['pinterest'])
+            ) {
                 http_response_code(401);
                 return;
             }
@@ -902,6 +909,36 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             return;
         }
         session_write_close();
+        if (isset($_GET['pinterest'])) {
+            header('Content-Type: application/json; charset=utf-8');
+            try {
+                if (isset($_GET['bookmark']) && !is_string($_GET['bookmark'])) {
+                    throw PinterestException::invalidRequest();
+                }
+                $source = new PinterestSource(
+                    client: new PinterestClient(
+                        accessToken: $this->getSetting('PINTEREST_ACCESS_TOKEN'),
+                        dataPath: $this->dataPath,
+                        appId: $this->getSetting('PINTEREST_APP_ID'),
+                        appSecret: $this->getSetting('PINTEREST_APP_SECRET')
+                    ),
+                    boardUrl: $this->getSetting('PINTEREST_BOARD_URL'),
+                    boardId: $this->getSetting('PINTEREST_BOARD_ID')
+                );
+                $board = is_string($_GET['board'] ?? null) ? $_GET['board'] : '';
+                $response = match ($_GET['pinterest']) {
+                    'boards' => $source->boards(),
+                    'pins' => $source->pins($board, $_GET['bookmark'] ?? null),
+                    'pin' => $source->pin($board, is_string($_GET['id'] ?? null) ? $_GET['id'] : ''),
+                    default => throw PinterestException::invalidRequest()
+                };
+                echo json_encode($response, JSON_THROW_ON_ERROR);
+            } catch (PinterestException $exception) {
+                http_response_code($exception->getCode());
+                echo json_encode(['error' => $exception->getMessage()], JSON_THROW_ON_ERROR);
+            }
+            return;
+        }
         if (isset($_GET['jobs'])) {
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode($this->jobs->all(), JSON_THROW_ON_ERROR);
@@ -998,6 +1035,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             [$_GET['from'] ?? '', $_GET['to'] ?? '']
         );
         $jobsView = ($_GET['view'] ?? '') === 'jobs';
+        $pinterestView = ($_GET['view'] ?? '') === 'pinterest';
         $jobs = $jobsView ? $this->jobs->all() : [];
         $jobCommands = [];
         foreach ($jobs as $job => &$state) {
@@ -1028,7 +1066,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         }
         $personFaces = $peopleView && $person > 0 ? $this->faces->personFaces($person) : [];
         $photos =
-            $peopleView || $jobsView
+            $peopleView || $jobsView || $pinterestView
                 ? []
                 : $this->photos(
                     album: $album,
@@ -1042,7 +1080,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
                     to: $to
                 );
         $matchedPhotos =
-            $peopleView || $jobsView
+            $peopleView || $jobsView || $pinterestView
                 ? null
                 : $this->photoCount(album: $album, person: $person, relevance: $relevance, from: $from, to: $to);
         $stats = $this->photoStats();
@@ -1052,6 +1090,9 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         }
         if ($jobsView) {
             $title = 'Jobs';
+        }
+        if ($pinterestView) {
+            $title = 'Pinterest';
         }
         $pagination = [
             'person' => $person,
@@ -1064,7 +1105,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         ];
         $image = filter_var($_GET['image'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         $selectedMedia =
-            $image && !$peopleView && !$jobsView
+            $image && !$peopleView && !$jobsView && !$pinterestView
                 ? $this->photos(album: $album, person: $person, relevance: $relevance, id: $image, from: $from, to: $to)
                 : [];
         $selectedPhoto = $selectedMedia[0]->id ?? 0;

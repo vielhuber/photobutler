@@ -462,6 +462,40 @@ h2 {
 .photo-loader [hidden] {
     display: none;
 }
+#pinterest-gallery [hidden] {
+    display: none;
+}
+.pinterest-grid .photo-card {
+    aspect-ratio: 0.8;
+}
+.pinterest-grid .photo-card img {
+    object-fit: contain;
+    transform: none;
+}
+.pinterest-grid .photo-card[data-preview-state='ready'] > img {
+    opacity: 1;
+}
+.pinterest-caption {
+    margin: 9px 0 4px;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.pinterest-origin {
+    font-size: 11px;
+    color: var(--green);
+}
+.pinterest-viewer-controls {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    border-bottom: 1px solid var(--line);
+}
+#pinterest-close {
+    margin-left: auto;
+}
+#pinterest-viewer .viewer-stage {
+    height: calc(82dvh - 60px);
+}
 .empty {
     text-align: center;
     padding: 80px 20px;

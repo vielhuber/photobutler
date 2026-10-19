@@ -1,5 +1,6 @@
 import { initializeJobs } from './?asset=jobs.js';
 import { DetailPreloader } from './?asset=preloader.js';
+import { initializePinterest } from './?asset=pinterest.js';
 
 export function initializeGallery(navigatePage) {
     let lifecycle = new AbortController();
@@ -13,6 +14,7 @@ export function initializeGallery(navigatePage) {
         history.replaceState(history.state, '', url);
     }
     let jobs = initializeJobs($main);
+    let pinterest = initializePinterest($main, navigatePage);
     let $sidebar = document.querySelector('#sidebar');
     let $sidebarResize = document.querySelector('#sidebar-resize');
     let sidebarWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
@@ -65,13 +67,16 @@ export function initializeGallery(navigatePage) {
     });
 
     function updateColumnSelector() {
-        document.querySelector('#gallery-columns').value = getComputedStyle(document.documentElement)
-            .getPropertyValue('--gallery-columns')
-            .trim();
+        for (let $columns of document.querySelectorAll('#gallery-columns, #pinterest-columns')) {
+            $columns.value = getComputedStyle(document.documentElement).getPropertyValue('--gallery-columns').trim();
+        }
     }
     updateColumnSelector();
     $main.addEventListener('change', event => {
-        if (event.target.id !== 'gallery-columns' || !['3', '4', '5', '6', '7', '8', '9'].includes(event.target.value))
+        if (
+            !['gallery-columns', 'pinterest-columns'].includes(event.target.id) ||
+            !['3', '4', '5', '6', '7', '8', '9'].includes(event.target.value)
+        )
             return;
         document.documentElement.style.setProperty('--gallery-columns', event.target.value);
         schedulePreloads();
@@ -795,6 +800,10 @@ export function initializeGallery(navigatePage) {
 
     return {
         syncPhoto() {
+            if (pinterest) {
+                pinterest.syncPhoto();
+                return;
+            }
             stopSlideshow();
             let id = new URL(location.href).searchParams.get('image');
             if (id && ($cards.some($card => $card.dataset.photo === id) || $viewer.dataset.selectedPhoto === id)) {
@@ -819,6 +828,7 @@ export function initializeGallery(navigatePage) {
         },
         update($page) {
             stopSlideshow();
+            pinterest?.dispose();
             $viewer.dataset.selectedPhoto = $page.querySelector('#viewer').dataset.selectedPhoto;
             galleryVersion++;
             $hoveredCard = null;
@@ -845,12 +855,14 @@ export function initializeGallery(navigatePage) {
             $viewer.close();
             schedulePreloads();
             jobs.update();
+            pinterest = initializePinterest($main, navigatePage);
             if ($photoLoader.dataset.next) photoObserver.observe($photoLoader);
         },
         dispose() {
             stopSlideshow();
             disposed = true;
             jobs.dispose();
+            pinterest?.dispose();
             galleryVersion++;
             photoObserver.disconnect();
             preloadObserver.disconnect();

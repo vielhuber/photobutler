@@ -200,6 +200,31 @@ Cloud imports read paginated metadata only and retain a delta checkpoint. Drive/
 
 the AI rating and face recognition read only existing local JPEG or PNG thumbnails. Missing previews never trigger an original download, including in gallery requests. Opening/downloading an original streams it from OneDrive; cached gallery previews and face crops remain local. Keep `.data/` on local Linux storage outside any OneDrive sync folder. Smaller previews can reduce detection of small faces.
 
+### Pinterest gallery
+
+**Pinterest** is a separate, read-only gallery with board selection, infinite scrolling, a detail viewer, keyboard navigation and direct image links. It uses the existing PhotoButler login and layout, but never mixes Pins with the OneDrive catalog, ratings, persons, slideshow or processing jobs.
+
+Register and obtain approval for a [Pinterest app](https://developers.pinterest.com/docs/getting-started/connect-app/), then add these settings to the private `.data/.env`:
+
+```dotenv
+PINTEREST_APP_ID='<your Pinterest app ID>'
+PINTEREST_APP_SECRET='<your Pinterest app secret>'
+PINTEREST_BOARD_ID='<your main board ID>'
+PINTEREST_BOARD_URL='https://www.pinterest.com/<account>/<board>/'
+```
+
+Enable two-factor authentication on the app owner's Pinterest account. PhotoButler uses the Client Credentials grant with `boards:read` and `pins:read`, stores authentication state (token, expiration and registration binding) in the private `.data/pinterest-token.json`, and automatically obtains a replacement before expiration. Concurrent requests share one token renewal; changing the app credentials invalidates the saved token. The app credentials and token never reach the browser.
+
+Alternatively, leave the app credentials empty and supply `PINTEREST_ACCESS_TOKEN` with `boards:read` and `pins:read`. Only this manually supplied token supports additional secret-content scopes (`boards:read_secret` and `pins:read_secret`) and must be replaced manually when it expires or is revoked.
+
+`PINTEREST_BOARD_ID` selects the initial board by its stable API identifier, independent of renames or URL slugs. `PINTEREST_BOARD_URL` is its external Pinterest link. Without an ID, PhotoButler falls back to matching that URL's owner and current board name/slug; use a board ID for renamed boards or names containing punctuation. Leave both settings empty to start with the first accessible board. The board must be available to the token's account; an inaccessible configured board is reported rather than replaced with another collection.
+
+Pinterest data is requested live, in pages of 100 Pins. There is no local Pin database, thumbnail cache, background polling, original download or AI/face processing. Images use the unchanged API-provided Pinterest image URLs; API tokens never reach the browser. The gallery links each Pin back to Pinterest and does not crop or overlay its image. This follows the current [developer guidelines](https://policy.pinterest.com/en/developer-guidelines), which do not permit storing Pin and board data retrieved through the API.
+
+Production-limited test tokens expire after 24 hours; app credentials avoid having to replace these test tokens repeatedly. Trial apps have a shared limit of 1,000 API requests per day; Standard access permits 1,000 `org_read` requests per minute per user/app. An app token rejected with HTTP 401 is renewed once, including when it was revoked before expiration. Other rejected or throttled requests require an explicit retry. See [token setup](https://developers.pinterest.com/docs/getting-started/set-up-authentication-and-authorization/), [test tokens](https://developers.pinterest.com/docs/developer-tools/quickstart-tools/) and [rate limits](https://developers.pinterest.com/docs/reference/rate-limits/).
+
+For apps registered on or after September 14, 2026, Pinterest may require additional approval to read non-business users' data (`PINNER_DATA_ACCESS_DENIED`). HTTP 401 with API code 3 means Pinterest does not support the application's consumer type; check the app's approval status or contact Pinterest support. Such provider failures remain visible and do not affect OneDrive. See the [Pinterest changelog](https://developers.pinterest.com/docs/changelog/changelog/).
+
 ## migration from older versions
 
 local-folder sources (`PHOTO_PATHS`), local thumbnail rendering, sticker animation rendering and `photobutler-deduplicate` have been removed; existing catalogs switch to OneDrive via `ONEDRIVE_LEGACY_ROOT` without losing IDs or ratings.
