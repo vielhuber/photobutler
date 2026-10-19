@@ -85,24 +85,26 @@ export function initializeGallery(navigatePage) {
         } catch {}
     });
 
-    let previewSelector = '[data-preview-state] > img:not(.slideshow-background)';
+    let previewSelector = '[data-preview-state] > img:not(.slideshow-background), [data-preview-state] > video';
     function updatePreview($image) {
-        let state =
-            !$image.getAttribute('src') || !$image.complete ? 'loading' : $image.naturalWidth > 0 ? 'ready' : 'error';
+        let video = $image instanceof HTMLVideoElement;
+        let ready = video ? $image.readyState >= 2 : $image.complete && $image.naturalWidth > 0;
+        let failed = video ? $image.error !== null : $image.complete && !$image.naturalWidth;
+        let state = !$image.getAttribute('src') ? 'loading' : failed ? 'error' : ready ? 'ready' : 'loading';
         $image.parentElement.dataset.previewState = state;
         $image.parentElement.setAttribute('aria-busy', String(state === 'loading'));
     }
     function updatePreviews() {
         document.querySelectorAll(previewSelector).forEach(updatePreview);
     }
-    for (let eventName of ['load', 'error']) {
+    for (let eventName of ['load', 'loadeddata', 'playing', 'error']) {
         document.addEventListener(
             eventName,
             event => {
                 if (event.target.matches?.(previewSelector)) updatePreview(event.target);
                 if (event.target === $image) {
                     schedulePreloads();
-                    if (eventName === 'load') {
+                    if (eventName === 'load' || eventName === 'playing') {
                         positionFaces();
                         scheduleSlideshow();
                     }
@@ -129,6 +131,25 @@ export function initializeGallery(navigatePage) {
     let $download = document.querySelector('#viewer-download');
     let $previous = document.querySelector('.viewer-previous');
     let $next = document.querySelector('.viewer-next');
+    function stopVideo($video = $image) {
+        if (!($video instanceof HTMLVideoElement)) return;
+        $video.pause();
+        $video.removeAttribute('src');
+        $video.load();
+    }
+    $viewer.addEventListener('close', () => stopVideo(), { signal: lifecycle.signal });
+
+    function createVideo(photo) {
+        let $video = document.createElement('video');
+        $video.controls = true;
+        $video.playsInline = true;
+        $video.preload = 'auto';
+        $video.defaultMuted = $video.muted = true;
+        $video.poster = `?photo=${photo.id}&size=display`;
+        $video.setAttribute('aria-label', photo.name);
+        $video.src = `?photo=${photo.id}&size=original`;
+        return $video;
+    }
     let csrf = document.querySelector('meta[name="csrf-token"]').content;
     let slideshow = false;
     let overviewSlideshow = false;
@@ -182,6 +203,7 @@ export function initializeGallery(navigatePage) {
         wakeLock = null;
         $viewer.classList.remove('slideshow');
         cancelAnimationFrame(dissolveFrame);
+        stopVideo($slideshowPrevious?.querySelector('video') ?? null);
         $slideshowPrevious?.remove();
         $slideshowPrevious = null;
         $slideshowBackground.removeAttribute('src');
@@ -191,29 +213,51 @@ export function initializeGallery(navigatePage) {
     }
 
     async function loadSlideshowPhoto(id) {
-        let $loadedImage = new Image();
+        let run = slideshowRun;
+        let response = await fetch(`?detail=${id}`, { signal: lifecycle.signal });
+        if (!response.ok) throw new Error('Das Foto konnte nicht geladen werden. Bitte neu anmelden.');
+        let photo = await response.json();
+        if (!slideshow || run !== slideshowRun) throw new Error('Slideshow gestoppt.');
+        let $loadedImage = photo.video ? createVideo(photo) : new Image();
         let $background = new Image();
+        if (photo.video) {
+            $background.src = $loadedImage.poster;
+            await Promise.all([
+                new Promise((resolve, reject) => {
+                    $loadedImage.addEventListener('loadeddata', resolve, { once: true });
+                    $loadedImage.addEventListener(
+                        'error',
+                        () => reject(new Error('Video konnte nicht geladen werden.')),
+                        { once: true }
+                    );
+                }),
+                $background.decode()
+            ]);
+            return { photo, $image: $loadedImage, $background };
+        }
         $loadedImage.fetchPriority = 'high';
         $loadedImage.src = $background.src = `?photo=${id}&size=original`;
-        let decoded = Promise.all([$loadedImage.decode(), $background.decode()]).catch(async () => {
+        await Promise.all([$loadedImage.decode(), $background.decode()]).catch(async () => {
             $loadedImage.src = $background.src = `?photo=${id}&size=display`;
             await Promise.all([$loadedImage.decode(), $background.decode()]);
         });
-        let [photo] = await Promise.all([
-            fetch(`?detail=${id}`, { signal: lifecycle.signal }).then(response => {
-                if (!response.ok) throw new Error('Das Foto konnte nicht geladen werden. Bitte neu anmelden.');
-                return response.json();
-            }),
-            decoded
-        ]);
         return { photo, $image: $loadedImage, $background };
     }
 
     async function scheduleSlideshow() {
-        if (!slideshow || !currentPhoto || !$image.complete || !$image.naturalWidth) return;
+        if (!slideshow || !currentPhoto || $image.parentElement.dataset.previewState !== 'ready') return;
+        let $video = $image instanceof HTMLVideoElement ? $image : null;
+        if ($video?.paused) return;
         let run = slideshowRun;
         if (scheduledSlideshowRun === run) return;
         scheduledSlideshowRun = run;
+        let finished =
+            $video && !$video.ended
+                ? new Promise(resolve => {
+                      $video.addEventListener('ended', resolve, { once: true });
+                      $video.addEventListener('emptied', resolve, { once: true });
+                  })
+                : Promise.resolve();
         let deadline = performance.now() + 18000;
         try {
             let nextIndex = currentIndex + 1 + (overviewSlideshow ? Math.floor(Math.random() * 4) : 0);
@@ -233,9 +277,11 @@ export function initializeGallery(navigatePage) {
             let id = Number($cards[nextIndex].dataset.photo);
             let prepared = await loadSlideshowPhoto(id);
             if (!slideshow || run !== slideshowRun) return;
-            await new Promise(resolve => {
-                slideTimer = setTimeout(resolve, Math.max(0, deadline - performance.now()));
-            });
+            if ($video) await finished;
+            if (!$video)
+                await new Promise(resolve => {
+                    slideTimer = setTimeout(resolve, Math.max(0, deadline - performance.now()));
+                });
             if (!slideshow || run !== slideshowRun) return;
             await openPhoto(id, true, prepared);
         } catch (error) {
@@ -313,6 +359,7 @@ export function initializeGallery(navigatePage) {
     async function openPhoto(id, updateHistory = true, prepared = null) {
         id = Number(id);
         if (!Number.isSafeInteger(id) || id < 1) return;
+        if (!slideshow) stopVideo();
         slideshowRun++;
         clearTimeout(slideTimer);
         let request = ++requestNumber;
@@ -328,11 +375,16 @@ export function initializeGallery(navigatePage) {
             if (request !== requestNumber || !slideshow) return;
         }
         cancelAnimationFrame(dissolveFrame);
+        stopVideo($slideshowPrevious?.querySelector('video') ?? null);
         $slideshowPrevious?.remove();
         $slideshowPrevious = null;
         if (prepared) {
             let $previousImage = $image;
             let $previousBackground = $slideshowBackground;
+            if ($previousImage instanceof HTMLVideoElement) {
+                $previousImage.controls = false;
+                $previousImage.pause();
+            }
             $image.replaceWith(prepared.$image);
             $slideshowBackground.replaceWith(prepared.$background);
             $image = prepared.$image;
@@ -342,7 +394,12 @@ export function initializeGallery(navigatePage) {
             $slideshowBackground.className = 'slideshow-background';
             $slideshowBackground.alt = '';
             $slideshowBackground.setAttribute('aria-hidden', 'true');
-            if ($viewer.open && $previousImage.complete && $previousImage.naturalWidth) {
+            if (
+                $viewer.open &&
+                ($previousImage instanceof HTMLVideoElement
+                    ? $previousImage.readyState >= 2
+                    : $previousImage.complete && $previousImage.naturalWidth)
+            ) {
                 $previousImage.removeAttribute('id');
                 $previousBackground.removeAttribute('id');
                 $slideshowPrevious = document.createElement('div');
@@ -351,6 +408,7 @@ export function initializeGallery(navigatePage) {
                 $slideshowPrevious.append($previousBackground, $previousImage);
                 $image.parentElement.append($slideshowPrevious);
             }
+            if (!$slideshowPrevious) stopVideo($previousImage);
         }
         $image.getAnimations().forEach(animation => animation.cancel());
         currentIndex = $cards.findIndex($card => Number($card.dataset.photo) === id);
@@ -376,11 +434,8 @@ export function initializeGallery(navigatePage) {
         preloader.update($cards, currentIndex, true);
         $image.fetchPriority = 'high';
         if (!prepared) {
-            $image.onerror = () => {
-                $image.onerror = null;
-                $image.src = `?photo=${id}&size=display`;
-            };
-            $image.src = `?photo=${id}&size=original`;
+            $image.onerror = null;
+            $image.removeAttribute('src');
         }
         updatePreview($image);
         if (!$viewer.open) $viewer.showModal();
@@ -396,6 +451,23 @@ export function initializeGallery(navigatePage) {
                 photo = await response.json();
             }
             if (request !== requestNumber) return;
+            let video = photo.video;
+            if (!prepared && (video || $image instanceof HTMLVideoElement)) {
+                let $media = video ? createVideo(photo) : new Image();
+                $media.id = 'viewer-image';
+                $image.replaceWith($media);
+                $image = $media;
+            }
+            if (!prepared) {
+                if (!video) {
+                    $image.onerror = () => {
+                        $image.onerror = null;
+                        $image.src = `?photo=${id}&size=display`;
+                    };
+                    $image.src = `?photo=${id}&size=original`;
+                }
+                updatePreview($image);
+            }
             currentPhoto = photo;
             renderFaces(photo);
             $title.textContent = photo.name;
@@ -409,17 +481,30 @@ export function initializeGallery(navigatePage) {
             $favorite.textContent = photo.favorite ? '♥ Favorit entfernen' : '♡ Als Favorit';
             $favorite.disabled = false;
             $download.href = `?photo=${photo.id}&size=original&download=1`;
+            if (video) {
+                let $video = $image;
+                $video.autoplay = true;
+                $video.play().catch(error => {
+                    if ($video !== $image || !$viewer.open || error.name === 'AbortError') return;
+                    $message.textContent =
+                        'Video konnte nicht automatisch gestartet werden. Bitte den Player bedienen.';
+                });
+            }
             if (slideshow) {
                 let [year, month, day] = photo.taken.slice(0, 10).split('-');
                 $slideshowDate.dateTime = photo.taken.slice(0, 10);
                 $slideshowDate.textContent = `${day}.${month}.${year}`;
-                if (matchMedia('(prefers-reduced-motion: reduce)').matches) $slideshowPrevious?.remove();
+                if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                    stopVideo($slideshowPrevious?.querySelector('video') ?? null);
+                    $slideshowPrevious?.remove();
+                }
                 if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-                    $image.animate([{ transform: 'scale(1.035)' }, { transform: 'scale(1)' }], {
-                        duration: 19500,
-                        easing: 'ease-out',
-                        fill: 'forwards'
-                    });
+                    if (!video)
+                        $image.animate([{ transform: 'scale(1.035)' }, { transform: 'scale(1)' }], {
+                            duration: 19500,
+                            easing: 'ease-out',
+                            fill: 'forwards'
+                        });
                     if ($slideshowPrevious) {
                         let $outgoing = $slideshowPrevious;
                         $dissolveAlpha.setAttribute('intercept', '1');
@@ -429,7 +514,10 @@ export function initializeGallery(navigatePage) {
                             let progress = Math.min(1, (now - started) / 3600);
                             $dissolveAlpha.setAttribute('intercept', String(1 - progress * 37));
                             if (progress < 1) dissolveFrame = requestAnimationFrame(dissolve);
-                            if (progress === 1) $outgoing.remove();
+                            if (progress === 1) {
+                                stopVideo($outgoing.querySelector('video'));
+                                $outgoing.remove();
+                            }
                         };
                         dissolveFrame = requestAnimationFrame(dissolve);
                     }
@@ -760,6 +848,7 @@ export function initializeGallery(navigatePage) {
     if ($photoLoader.dataset.next) photoObserver.observe($photoLoader);
     function closePhoto() {
         stopSlideshow();
+        stopVideo();
         requestNumber++;
         currentPhoto = null;
         $viewer.close();
@@ -860,6 +949,7 @@ export function initializeGallery(navigatePage) {
         },
         dispose() {
             stopSlideshow();
+            stopVideo();
             disposed = true;
             jobs.dispose();
             pinterest?.dispose();
