@@ -498,6 +498,11 @@ h2 {
 #pinterest-viewer .viewer-stage {
     height: calc(92dvh - 61px);
 }
+#pinterest-image,
+#viewer.pinterest-slideshow #viewer-image,
+#viewer.pinterest-slideshow .slideshow-previous > img:not(.slideshow-background) {
+    filter: url('#pinterest-sharpen-filter');
+}
 .empty {
     text-align: center;
     padding: 80px 20px;

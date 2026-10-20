@@ -208,6 +208,8 @@ the AI rating and face recognition read only existing local JPEG or PNG thumbnai
 
 Start the selected board's fullscreen slideshow with **Slideshow** at the top right. It shares the photo slideshow's display duration, background preloading, transitions, wake lock and endless repetition, loading further Pin pages only as needed. Escape ends playback. Both galleries have their own slideshow button; there is no slideshow entry in the sidebar. The current Pin's title appears in the same bottom-centered style as the photo slideshow's capture date; the Pinterest link remains available in the detail viewer.
 
+Pinterest images are gently sharpened for display in the detail viewer and fullscreen slideshow, including both images during transitions. This browser-only effect leaves tiles, slideshow backgrounds, OneDrive photos, image URLs and original files unchanged; it never writes to Pinterest.
+
 Register and obtain approval for a [Pinterest app](https://developers.pinterest.com/docs/getting-started/connect-app/), then add these settings to the private `.data/.env`:
 
 ```dotenv
@@ -223,7 +225,7 @@ Alternatively, leave the app credentials empty and supply `PINTEREST_ACCESS_TOKE
 
 `PINTEREST_BOARD_ID` selects the initial board by its stable API identifier, independent of renames or URL slugs. `PINTEREST_BOARD_URL` is its external Pinterest link. Without an ID, PhotoButler falls back to matching that URL's owner and current board name/slug; use a board ID for renamed boards or names containing punctuation. Leave both settings empty to start with the first accessible board. The board must be available to the token's account; an inaccessible configured board is reported rather than replaced with another collection.
 
-Pinterest data is requested live, in pages of 100 Pins. There is no local Pin database, thumbnail cache, background polling, original download or AI/face processing. Images use the unchanged API-provided Pinterest image URLs; API tokens never reach the browser. The gallery links each Pin back to Pinterest and does not crop or overlay its image. This follows the current [developer guidelines](https://policy.pinterest.com/en/developer-guidelines), which do not permit storing Pin and board data retrieved through the API.
+Pinterest data is requested live, in pages of 100 Pins. There is no local Pin database, thumbnail cache, background polling, original download or AI/face processing. Images use the unchanged API-provided Pinterest image URLs; API tokens never reach the browser. The gallery links each Pin back to Pinterest and does not crop or overlay its image. Live fetching avoids storing Pin and board data retrieved through the API, as required by the [developer guidelines](https://policy.pinterest.com/en/developer-guidelines).
 
 Production-limited test tokens expire after 24 hours; app credentials avoid having to replace these test tokens repeatedly. Trial apps have a shared limit of 1,000 API requests per day; Standard access permits 1,000 `org_read` requests per minute per user/app. An app token rejected with HTTP 401 is renewed once, including when it was revoked before expiration. Other rejected or throttled requests require an explicit retry. See [token setup](https://developers.pinterest.com/docs/getting-started/set-up-authentication-and-authorization/), [test tokens](https://developers.pinterest.com/docs/developer-tools/quickstart-tools/) and [rate limits](https://developers.pinterest.com/docs/reference/rate-limits/).
 
