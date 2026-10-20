@@ -28,16 +28,26 @@ $pinterestView ??= false;
                 ? 'active'
                 : '' ?>" href="?<?= $escape(
     $galleryPreferences
-) ?>"><span aria-hidden="true">▦</span> Fotos <small><?= $stats['total'] ?></small></a>
+) ?>"><span aria-hidden="true">▦</span> Fotos <small><?= number_format(
+    (int) $stats['total'],
+    0,
+    ',',
+    '.'
+) ?></small></a>
             <a class="nav-item <?= $pinterestView ? 'active' : '' ?>" href="?view=pinterest&amp;<?= $escape(
     $galleryPreferences
-) ?>"><span aria-hidden="true">P</span> Pinterest</a>
+) ?>"><span aria-hidden="true">P</span> Pinterest <small id="pinterest-nav-count">…</small></a>
             <a class="nav-item <?= $peopleView ? 'active' : '' ?>" href="?view=persons&amp;<?= $escape(
     $galleryPreferences
-) ?>"><span aria-hidden="true">♙</span> Personen <small><?= $shownPersons ?></small></a>
+) ?>"><span aria-hidden="true">♙</span> Personen <small><?= number_format($shownPersons, 0, ',', '.') ?></small></a>
             <a class="nav-item <?= $jobsView
                 ? 'active'
-                : '' ?>" href="?view=jobs"><span aria-hidden="true">⚙</span> Jobs</a>
+                : '' ?>" href="?view=jobs"><span aria-hidden="true">⚙</span> Jobs <small><?= number_format(
+    count(\vielhuber\photobutler\JobRunner::LABELS),
+    0,
+    ',',
+    '.'
+) ?></small></a>
         </nav>
         <form method="post" class="logout-form"><input type="hidden" name="csrf" value="<?= $escape(
             $csrf

@@ -1,6 +1,6 @@
 import { initializeJobs } from './?asset=jobs.js';
 import { DetailPreloader } from './?asset=preloader.js';
-import { initializePinterest } from './?asset=pinterest.js';
+import { initializePinterest, loadPinterestBoards } from './?asset=pinterest.js';
 
 export function initializeGallery(navigatePage) {
     let lifecycle = new AbortController();
@@ -15,6 +15,7 @@ export function initializeGallery(navigatePage) {
     }
     let jobs = initializeJobs($main);
     let pinterest = initializePinterest($main, navigatePage);
+    loadPinterestBoards().catch(() => {});
     let $sidebar = document.querySelector('#sidebar');
     let $sidebarResize = document.querySelector('#sidebar-resize');
     let sidebarWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
@@ -956,6 +957,7 @@ export function initializeGallery(navigatePage) {
             schedulePreloads();
             jobs.update();
             pinterest = initializePinterest($main, navigatePage);
+            loadPinterestBoards().catch(() => {});
             if ($photoLoader.dataset.next) photoObserver.observe($photoLoader);
         },
         dispose() {

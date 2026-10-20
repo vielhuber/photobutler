@@ -180,6 +180,8 @@ the **Slideshow** button in the gallery filter row starts a full-viewport presen
 
 the desktop grid offers 3 to 9 columns (default 5); mobile stays at 2 columns. the selected column count and sidebar width are stored locally and applied before the first paint.
 
+navigation counts cover photos, Pins in the configured main board, listed persons and available jobs, using smaller text and German thousands separators. the Pinterest count is fetched live on page loads and navigation, shares an in-flight board request with the Pinterest view, and shows “–” when unavailable instead of an incorrect zero.
+
 photobutler can be installed from Chrome on Android: open the HTTPS site, choose **Installieren und Verknüpfung erstellen → Installieren** from the browser menu, and launch it using its photo icon. the manifest is linked on the login and gallery pages and starts the site in a standalone app window; the existing login stays unchanged. its opaque 192px and 512px icons reuse the gallery logo and support Android masking. no service worker or offline cache is installed: an internet connection is required.
 
 thumbnails are downloaded by the explicit thumbnail job and cached in `.data/thumbnails/` as files, not image blobs in sqlite. existing files are served immediately after access checks, even with an empty browser cache. while a preview is loading, the grid or popup shows a spinner; failed previews show an error instead. unchanged previews are reused from the private browser cache after authenticated etag revalidation (304, no image body). changed previews receive a new content hash; cloud originals use metadata-based authenticated cache revalidation without hashing/downloading the original; downloads remain uncached.

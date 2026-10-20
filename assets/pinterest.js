@@ -1,3 +1,36 @@
+let boardsRequest = null;
+
+async function request(parameters, signal) {
+    let response = await fetch(`?${new URLSearchParams(parameters)}`, { signal });
+    if (!response.headers.get('content-type')?.includes('application/json')) {
+        throw new Error('Pinterest konnte nicht geladen werden. Verbindung und Anmeldung prüfen.');
+    }
+    let result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Pinterest konnte nicht geladen werden.');
+    return result;
+}
+
+export function loadPinterestBoards() {
+    boardsRequest ??= request({ pinterest: 'boards' })
+        .then(result => {
+            let $count = document.querySelector('#pinterest-nav-count');
+            if ($count)
+                $count.textContent = (
+                    result.boards.find(board => board.id === result.selected)?.pinCount ?? 0
+                ).toLocaleString('de-DE');
+            return result;
+        })
+        .catch(error => {
+            let $count = document.querySelector('#pinterest-nav-count');
+            if ($count) $count.textContent = '–';
+            throw error;
+        })
+        .finally(() => {
+            boardsRequest = null;
+        });
+    return boardsRequest;
+}
+
 export function initializePinterest($main, navigatePage) {
     let $gallery = $main.querySelector('#pinterest-gallery');
     if (!$gallery) return null;
@@ -27,16 +60,6 @@ export function initializePinterest($main, navigatePage) {
         { rootMargin: '400px' }
     );
 
-    async function request(parameters) {
-        let response = await fetch(`?${new URLSearchParams(parameters)}`, { signal: lifecycle.signal });
-        if (!response.headers.get('content-type')?.includes('application/json')) {
-            throw new Error('Pinterest konnte nicht geladen werden. Verbindung und Anmeldung prüfen.');
-        }
-        let result = await response.json();
-        if (!response.ok) throw new Error(result.error || 'Pinterest konnte nicht geladen werden.');
-        return result;
-    }
-
     async function loadBoards() {
         selectedBoard = '';
         $board.disabled = true;
@@ -44,7 +67,8 @@ export function initializePinterest($main, navigatePage) {
         $retry.hidden = true;
         $message.textContent = 'Pinnwände werden geladen …';
         try {
-            let result = await request({ pinterest: 'boards' });
+            let result = await loadPinterestBoards();
+            if (lifecycle.signal.aborted) return;
             if (result.boards.length === 0) {
                 $board.replaceChildren(new Option('Keine Pinnwände verfügbar', ''));
                 $message.textContent = 'Keine Pinnwände mit diesem Token verfügbar.';
@@ -82,7 +106,10 @@ export function initializePinterest($main, navigatePage) {
         $retry.hidden = true;
         $grid.setAttribute('aria-busy', 'true');
         $message.textContent = 'Pins werden geladen …';
-        loading = request({ pinterest: 'pins', board: selectedBoard, ...(bookmark ? { bookmark } : {}) });
+        loading = request(
+            { pinterest: 'pins', board: selectedBoard, ...(bookmark ? { bookmark } : {}) },
+            lifecycle.signal
+        );
         try {
             let result = await loading;
             for (let pin of result.pins) {
@@ -168,7 +195,7 @@ export function initializePinterest($main, navigatePage) {
         detailRequest = id;
         $retry.hidden = true;
         try {
-            let pin = await request({ pinterest: 'pin', board: selectedBoard, id });
+            let pin = await request({ pinterest: 'pin', board: selectedBoard, id }, lifecycle.signal);
             if (new URL(location.href).searchParams.get('image') !== id) return;
             pins.set(pin.id, pin);
             openPin(pin.id, false);
