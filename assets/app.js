@@ -476,7 +476,15 @@ export function initializeGallery(navigatePage) {
             }
             currentPhoto = photo;
             $title.textContent = photo.name;
-            if (pinterest) $slideshowPinterestTitle.textContent = photo.name;
+            if (pinterest) {
+                let title = photo.name.trim();
+                let hasProtocol = /^https?:\/\//i.test(title);
+                let address = URL.parse(hasProtocol ? title : `https://${title}`);
+                $slideshowPinterestTitle.textContent =
+                    address && !/\s/.test(title) && !address.username && (hasProtocol || address.hostname.includes('.'))
+                        ? title.replace(/^https?:\/\//i, '')
+                        : '';
+            }
             if (!pinterest) {
                 renderFaces(photo);
                 $date.textContent = [

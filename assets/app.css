@@ -1027,7 +1027,7 @@ textarea,
     position: relative;
 }
 #viewer.slideshow #slideshow-date,
-#viewer.pinterest-slideshow #slideshow-pinterest-title {
+#viewer.pinterest-slideshow #slideshow-pinterest-title:not(:empty) {
     display: block;
     position: absolute;
     bottom: calc(24px + env(safe-area-inset-bottom, 0px));
