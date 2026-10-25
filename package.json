@@ -1,12 +1,12 @@
 {
-    "version": "2.5.1",
+    "version": "2.5.2",
     "private": true,
     "scripts": {
         "format": "prettier --write .",
         "format:check": "prettier --check ."
     },
     "devDependencies": {
-        "@prettier/plugin-php": ">=0.25",
+        "@prettier/plugin-php": ">=0.26",
         "prettier": ">=3"
     }
 }
