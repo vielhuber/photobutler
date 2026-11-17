@@ -99,12 +99,31 @@ final class SimilarPhotosTest extends TestCase
         $this->library->database->exec('UPDATE photos SET width = 4000, height = 3000 WHERE id = 1;
             UPDATE photos SET width = 2000, height = 1500 WHERE id = 4;');
         $this->assertSame(4, $this->library->similar->run());
-        $this->assertSame(-1, $this->library->photo(4)->priority);
-        $this->assertSame('Gleiches Foto in höherer Auflösung vorhanden', $this->library->photo(4)->similar);
+        $this->assertSame(1, $this->library->photo(4)->priority);
+        $this->assertSame(
+            1,
+            $this->library->database->query('SELECT is_duplicate FROM photos WHERE id = 4')->fetchColumn()
+        );
+        $this->assertSame(
+            'Gleiches Foto in höherer Auflösung vorhanden',
+            $this->library->database->query('SELECT reason FROM similar_state WHERE photo_id = 4')->fetchColumn()
+        );
+        foreach (['all', 'relevant', 'unrated', 'excluded'] as $relevance) {
+            $this->assertNotContains(4, array_column($this->library->photos(relevance: $relevance), 'id'));
+            $this->assertSame([], $this->library->photos(relevance: $relevance, id: 4));
+        }
+        $this->assertSame(4, $this->library->photoCount());
         $this->assertSame(1, $this->library->photo(1)->priority);
         $state = $this->library->jobs->all()['similar'];
         $this->assertSame(1, $state['completed']);
         $this->assertSame(3, $state['queued']);
+        $this->library->jobs->reset('similar');
+        $this->assertSame(
+            0,
+            $this->library->database->query('SELECT is_duplicate FROM photos WHERE id = 4')->fetchColumn()
+        );
+        $this->assertSame(1, $this->library->photo(4)->priority);
+        $this->assertSame(5, $this->library->photoCount());
     }
 
     public function testManualRatingsAndRatingResetLeaveNoStaleDecisions(): void
