@@ -1401,18 +1401,24 @@ final class PhotoButlerTest extends TestCase
     {
         file_put_contents(
             $this->root . '/.data/.env',
-            "AI_PROVIDER=cliproxyapi\nAI_MODEL=test\nAI_BASE_URL=http://127.0.0.1:1\nAI_API_KEY=test-only\n",
-            FILE_APPEND
+            data: "AI_PROVIDER=cliproxyapi\nAI_MODEL=fixture\nAI_API_KEY=test-only\n",
+            flags: FILE_APPEND
         );
-        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
-        $this->index([$this->item('a', 'Meer.jpg'), $this->item('b', 'Zweiter.jpg')]);
-        $this->library->oneDrive->previews([1, 2]);
-        $this->library->priority(1, -1);
-        $this->assertSame(0, $this->library->tag(limit: 5));
-        $this->assertSame('pending', $this->library->photo(1)->status);
-        $this->assertSame(-1, $this->library->photo(1)->priority);
-        $this->assertSame('error', $this->library->photo(2)->status);
-        $this->assertSame(1, $this->library->jobs->all()['tag']['total']);
+        $this->withGateway(
+            '{"error":{"message":"Fixture request rejected","type":"invalid_request_error","code":"invalid_request"}}',
+            function (): void {
+                $this->index([$this->item('a', name: 'Meer.jpg'), $this->item('b', name: 'Zweiter.jpg')]);
+                $this->library->oneDrive->previews([1, 2]);
+                $this->library->priority(1, -1);
+                $this->assertSame(0, $this->library->tag(limit: 5));
+                $this->assertSame('pending', $this->library->photo(1)->status);
+                $this->assertSame(-1, $this->library->photo(1)->priority);
+                $this->assertSame('error', $this->library->photo(2)->status);
+                $this->assertSame(1, $this->library->jobs->all()['tag']['total']);
+                $this->assertCount(1, glob($this->root . '/payload-*.json'));
+            },
+            status: 400
+        );
     }
 
     public function testInitializerPreservesIndentedCredentials(): void

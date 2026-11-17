@@ -142,4 +142,55 @@ trait CloudFixture
         ];
         $this->library->index();
     }
+
+    /**
+     * Serve model responses or HTTP failures and retain every chat payload.
+     */
+    private function withGateway(string $answer, callable $callback, int $status = 200): void
+    {
+        $socket = stream_socket_server('tcp://127.0.0.1:0');
+        $address = stream_socket_get_name($socket, remote: false);
+        fclose($socket);
+        $router = $this->root . '/gateway.php';
+        file_put_contents(
+            $router,
+            <<<'PHP'
+            <?php
+            declare(strict_types=1);
+            header('Content-Type: application/json');
+            if (str_ends_with($_SERVER['REQUEST_URI'], '/models')) {
+                echo json_encode(['data' => [['id' => 'fixture', 'name' => 'fixture', 'architecture' => ['input_modalities' => ['text', 'image'], 'output_modalities' => ['text']], 'pricing' => ['prompt' => '0', 'completion' => '0']]]]);
+                return;
+            }
+            http_response_code((int) file_get_contents(__DIR__ . '/status.txt'));
+            file_put_contents(__DIR__ . '/payload-' . hrtime(true) . '.json', file_get_contents('php://input'));
+            if (http_response_code() >= 400) {
+                echo file_get_contents(__DIR__ . '/answer.txt');
+                return;
+            }
+            echo json_encode(['id' => 'fixture', 'model' => 'fixture', 'choices' => [['message' => ['role' => 'assistant', 'content' => file_get_contents(__DIR__ . '/answer.txt')], 'finish_reason' => 'stop']], 'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1, 'total_tokens' => 2]]);
+            PHP
+        );
+        file_put_contents($this->root . '/answer.txt', $answer);
+        file_put_contents($this->root . '/status.txt', (string) $status);
+        file_put_contents($this->root . '/.data/.env', "\nAI_BASE_URL=http://" . $address . "/v1\n", FILE_APPEND);
+        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
+        $process = proc_open(
+            [PHP_BINARY, '-S', $address, $router],
+            [1 => ['file', $this->root . '/gateway.log', 'w'], 2 => ['file', $this->root . '/gateway.log', 'a']],
+            $pipes
+        );
+        try {
+            $handle = curl_init('http://' . $address . '/v1/models');
+            curl_setopt($handle, CURLOPT_RETURNTRANSFER, value: true);
+            curl_setopt($handle, CURLOPT_TIMEOUT, value: 1);
+            for ($attempt = 0; $attempt < 100 && curl_exec($handle) === false; $attempt++) {
+                usleep(10_000);
+            }
+            $callback();
+        } finally {
+            proc_terminate($process);
+            proc_close($process);
+        }
+    }
 }

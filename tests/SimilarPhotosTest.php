@@ -175,48 +175,4 @@ final class SimilarPhotosTest extends TestCase
             array_column($this->library->database->query('PRAGMA table_info(similar_state)')->fetchAll(), 'name')
         );
     }
-
-    /**
-     * Answer every chat request with the given model output and store each request payload.
-     */
-    private function withGateway(string $answer, callable $callback): void
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0');
-        $address = stream_socket_get_name($socket, false);
-        fclose($socket);
-        $router = $this->root . '/gateway.php';
-        file_put_contents(
-            $router,
-            <<<'PHP'
-            <?php
-            header('Content-Type: application/json');
-            if (str_ends_with($_SERVER['REQUEST_URI'], '/models')) {
-                echo json_encode(['data' => [['id' => 'fixture', 'name' => 'fixture', 'architecture' => ['input_modalities' => ['text', 'image'], 'output_modalities' => ['text']], 'pricing' => ['prompt' => '0', 'completion' => '0']]]]);
-                return;
-            }
-            file_put_contents(__DIR__ . '/payload-' . hrtime(true) . '.json', file_get_contents('php://input'));
-            echo json_encode(['id' => 'fixture', 'model' => 'fixture', 'choices' => [['message' => ['role' => 'assistant', 'content' => file_get_contents(__DIR__ . '/answer.txt')], 'finish_reason' => 'stop']], 'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1, 'total_tokens' => 2]]);
-            PHP
-        );
-        file_put_contents($this->root . '/answer.txt', $answer);
-        file_put_contents($this->root . '/.data/.env', "\nAI_BASE_URL=http://" . $address . "/v1\n", FILE_APPEND);
-        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
-        $process = proc_open(
-            [PHP_BINARY, '-S', $address, $router],
-            [1 => ['file', $this->root . '/gateway.log', 'w'], 2 => ['file', $this->root . '/gateway.log', 'a']],
-            $pipes
-        );
-        try {
-            $handle = curl_init('http://' . $address . '/v1/models');
-            curl_setopt($handle, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($handle, CURLOPT_TIMEOUT, 1);
-            for ($attempt = 0; $attempt < 100 && curl_exec($handle) === false; $attempt++) {
-                usleep(10000);
-            }
-            $callback();
-        } finally {
-            proc_terminate($process);
-            proc_close($process);
-        }
-    }
 }
