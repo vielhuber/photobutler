@@ -19,6 +19,7 @@ final class FaceStoreTest extends TestCase
     {
         $this->createCloudLibrary();
         $this->index($this->photoItems(4));
+        $this->library->oneDrive->previews(range(1, 4));
     }
 
     protected function tearDown(): void
@@ -494,7 +495,7 @@ final class FaceStoreTest extends TestCase
         $this->assertSame(1, $reset['priority']);
         $this->assertSame(0, $this->photo(2)['priority']);
         $this->assertNull($this->photo(2)['ai_priority']);
-        $this->assertSame([], $this->client->downloads);
+        $this->assertSame(['1', '2', '3', '4'], $this->client->downloads);
         $this->assertSame(4, $this->library->resetAnalysis());
     }
 
@@ -596,6 +597,7 @@ final class FaceStoreTest extends TestCase
         $this->assertCount(0, $this->library->photos(album: 'Andere', person: 1));
         $this->assertCount(0, $this->library->photos(person: 999));
         $this->index($this->photoItems(70));
+        $this->library->oneDrive->previews(range(5, 70));
         foreach ($this->library->database->query('SELECT * FROM photos WHERE id >= 5')->fetchAll() as $photo) {
             $store->save($photo, $this->analysisResult([[1.0]]));
         }

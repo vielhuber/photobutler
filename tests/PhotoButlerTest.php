@@ -24,6 +24,7 @@ final class PhotoButlerTest extends TestCase
     private function indexMeer(): int
     {
         $this->index([$this->folder('urlaub', 'Urlaub'), $this->item('meer', 'Meer.jpg', 'urlaub')]);
+        $this->library->oneDrive->previews([1]);
         return 1;
     }
 
@@ -121,6 +122,7 @@ final class PhotoButlerTest extends TestCase
             $this->library->priority((int) $id, 1);
         }
         $this->index([$this->item('old', 'old.jpg', version: 'v2', modified: '2022-12-30T12:00:00Z')]);
+        $this->library->oneDrive->previews(range(1, 9));
         $this->assertCount(6, $this->library->photos(favorites: true));
         $photo = $this->library->photos(album: 'Urlaub')[0];
         $this->library->oneDrive->previews([$photo->id]);
@@ -248,6 +250,9 @@ final class PhotoButlerTest extends TestCase
             ['scan' => 'Galerieabschnitt', 'tag' => 'KI-Bewertung', 'faces' => 'analysiere Gesichter']
             as $job => $phase
         ) {
+            if ($job !== 'scan') {
+                $this->library->oneDrive->previews([1]);
+            }
             $run = $jobs->start($job);
             $state = $jobs->step($job, $run['token']);
             $this->assertStringContainsString($phase, implode(' ', array_column($state['log'], 'message')));
@@ -329,6 +334,8 @@ final class PhotoButlerTest extends TestCase
     public function testThumbnailFailuresCanRetryImmediatelyDespiteRecentTagErrors(): void
     {
         $this->indexMeer();
+        unlink($this->thumbnailPath(1));
+        $this->client->downloads = [];
         $this->client->invalidThumbnails = ['meer'];
         $this->library->database->exec("UPDATE photos SET status = 'error', attempted = " . time());
         $jobs = $this->library->jobs;
@@ -507,6 +514,7 @@ final class PhotoButlerTest extends TestCase
             '@odata.deltaLink' => OneDriveClient::GRAPH . '/drives/drive/root/delta?token=fixture'
         ];
         $this->library->index();
+        $this->library->oneDrive->previews([1]);
         foreach (['scan', 'previews', 'tag', 'faces'] as $job) {
             $this->library->database
                 ->prepare('INSERT INTO job_timings (job, seconds_per_file) VALUES (?, ?)')
@@ -831,13 +839,16 @@ final class PhotoButlerTest extends TestCase
 
     public function testIndexIsIdempotentAndNeverDownloadsDuringImport(): void
     {
-        $this->indexMeer();
+        $this->index([$this->folder('urlaub', 'Urlaub'), $this->item('meer', 'Meer.jpg', 'urlaub')]);
         $this->index([]);
-        $photos = $this->library->photos();
-        $this->assertCount(1, $photos);
-        $this->assertSame('Urlaub', $photos[0]->album);
+        $this->assertSame('Urlaub', $this->library->photo(1)->album);
+        $this->assertSame(1, $this->library->importProgress()['completed']);
+        $this->assertSame([], $this->library->photos());
+        $this->assertSame(0, $this->library->tag(limit: 1));
         $this->assertSame([], $this->client->downloads);
         $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
+        $this->library->oneDrive->previews([1]);
+        $this->assertCount(1, $this->library->photos());
     }
 
     public function testSearchAndFavorites(): void
@@ -1202,6 +1213,7 @@ final class PhotoButlerTest extends TestCase
     {
         $id = $this->indexMeer();
         file_put_contents($this->root . '/outside.jpg', $this->client->jpeg);
+        unlink($this->thumbnailPath($id));
         symlink($this->root . '/outside.jpg', $this->thumbnailPath($id));
         $this->assertNull($this->library->imagePath($id));
         $this->assertNull($this->library->imagePath($id, cachedOnly: true));
@@ -1262,6 +1274,8 @@ final class PhotoButlerTest extends TestCase
         $this->library->index();
         $this->assertCount(1, $this->library->photos());
         $this->index([$this->item('wald', 'Wald.jpg', 'urlaub')]);
+        $this->assertCount(1, $this->library->photos());
+        $this->library->oneDrive->previews([2, 3]);
         $this->assertCount(3, $this->library->photos());
     }
 
@@ -1384,17 +1398,23 @@ final class PhotoButlerTest extends TestCase
     {
         file_put_contents(
             $this->root . '/.data/.env',
-            "AI_PROVIDER=cliproxyapi\nAI_MODEL=test\nAI_BASE_URL=http://127.0.0.1:1\nAI_API_KEY=test-only\n",
+            "AI_PROVIDER=cliproxyapi\nAI_MODEL=fixture\nAI_API_KEY=test-only\n",
             FILE_APPEND
         );
-        $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
-        $this->index([$this->item('a', 'Meer.jpg'), $this->item('b', 'Zweiter.jpg')]);
-        $this->library->oneDrive->previews([2]);
-        $this->assertSame(0, $this->library->tag(limit: 1));
-        $this->assertSame('error', $this->library->photo(1)->status);
-        $this->assertSame('pending', $this->library->photo(2)->status);
-        $stats = new ReflectionMethod(PhotoButler::class, 'photoStats')->invoke($this->library);
-        $this->assertSame(2, $stats['queued']);
+        $this->withGateway(
+            '{"error":{"message":"Fixture request rejected","type":"invalid_request_error","code":"invalid_request"}}',
+            function (): void {
+                $this->index([$this->item('a', 'Meer.jpg'), $this->item('b', 'Zweiter.jpg')]);
+                $this->library->oneDrive->previews([2]);
+                $this->assertSame(0, $this->library->tag(limit: 1));
+                $this->assertSame('pending', $this->library->photo(1)->status);
+                $this->assertSame('error', $this->library->photo(2)->status);
+                $stats = new ReflectionMethod(PhotoButler::class, 'photoStats')->invoke($this->library);
+                $this->assertSame(1, $stats['queued']);
+                $this->assertCount(1, glob($this->root . '/payload-*.json'));
+            },
+            status: 400
+        );
     }
 
     public function testAiRatingOnlyRequestsUnratedPhotos(): void
@@ -1812,6 +1832,7 @@ final class PhotoButlerTest extends TestCase
                 $this->assertStringEndsWith('--' . $job . '-only', $command);
             }
             $this->assertStringNotContainsString('photobutler-test-cron-secret', $body);
+            unlink($this->thumbnailPath($id));
             $this->assertSame(404, $request('?photo=' . $id . '&size=thumb')[0]);
             $this->assertNull($this->library->imagePath($id, cachedOnly: true));
             $run = $this->library->jobs->start('previews');

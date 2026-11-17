@@ -11,6 +11,7 @@ final class FixtureOneDriveClient extends OneDriveClient
     public array $requests = [];
     public ?int $failDownload = null;
     public string $jpeg;
+    public string $defaultJpeg;
     public array $missingThumbnails = [];
     public array $invalidThumbnails = [];
 
@@ -57,7 +58,27 @@ final class FixtureOneDriveClient extends OneDriveClient
         if (in_array($item, $this->invalidThumbnails, true)) {
             return false;
         }
-        file_put_contents($target, $this->jpeg);
+        $jpeg = $this->jpeg;
+        if ($jpeg === $this->defaultJpeg) {
+            $image = imagecreatetruecolor(width: 180, height: 160);
+            for ($cell = 0; $cell < 72; $cell++) {
+                $shade = ord(hash('sha256', $item . ':' . $cell, binary: true)[0]);
+                $x = ($cell % 9) * 20;
+                $y = intdiv($cell, num2: 9) * 20;
+                imagefilledrectangle(
+                    $image,
+                    $x,
+                    $y,
+                    $x + 19,
+                    $y + 19,
+                    imagecolorallocate($image, $shade, $shade, $shade)
+                );
+            }
+            ob_start();
+            imagejpeg($image);
+            $jpeg = ob_get_clean();
+        }
+        file_put_contents($target, $jpeg);
         return true;
     }
 }
@@ -84,6 +105,7 @@ trait CloudFixture
         ob_start();
         imagejpeg(imagecreatetruecolor(16, 12));
         $this->client->jpeg = ob_get_clean();
+        $this->client->defaultJpeg = $this->client->jpeg;
         $this->library = new PhotoButler($this->root, oneDriveClient: $this->client);
     }
 

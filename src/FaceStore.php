@@ -17,9 +17,9 @@ final class FaceStore
     public const COVER_MIN_FACE_WIDTH = 0.1;
     public const NAMED_THRESHOLD = 0.4;
     public const NAMED_NEIGHBOURS = 3;
-    public const CURRENT_FACE = 'f.active = 1 AND p.available = 1 AND p.is_duplicate = 0 AND f.modified = p.modified AND f.bytes = p.bytes';
+    public const CURRENT_FACE = 'f.active = 1 AND p.available = 1 AND p.duplicate_checked = 1 AND p.is_duplicate = 0 AND f.modified = p.modified AND f.bytes = p.bytes';
     public const DUE =
-        "p.is_duplicate = 0 AND p.priority <> -1 AND (s.status IS NULL OR (s.status <> 'excluded' AND
+        "p.duplicate_checked = 1 AND p.is_duplicate = 0 AND p.priority <> -1 AND (s.status IS NULL OR (s.status <> 'excluded' AND
         (s.modified <> p.modified OR s.bytes <> p.bytes OR s.model <> :model OR
         s.status = 'pending' OR (s.status = 'error' AND s.attempted < :retry) OR
         (s.status IN ('done', 'unsupported') AND s.detection < " .
@@ -83,7 +83,7 @@ final class FaceStore
             ->query(
                 'SELECT persons.id, persons.name, persons.hidden, COUNT(DISTINCT p.id) AS total,
             (SELECT cover.id FROM faces cover JOIN photos cover_photo ON cover_photo.id = cover.photo_id
-                AND cover_photo.available = 1 AND cover_photo.is_duplicate = 0 AND cover_photo.modified = cover.modified AND cover_photo.bytes = cover.bytes
+                AND cover_photo.available = 1 AND cover_photo.duplicate_checked = 1 AND cover_photo.is_duplicate = 0 AND cover_photo.modified = cover.modified AND cover_photo.bytes = cover.bytes
                 WHERE cover.person_id = persons.id AND cover.ignored = 0 AND cover.active = 1
                 ORDER BY json_extract(cover.box, \'$[2]\') >= ' .
                     self::COVER_MIN_FACE_WIDTH .
@@ -94,7 +94,7 @@ final class FaceStore
                     self::LISTED_MIN_DAYS .
                     '))) AS listed
             FROM persons LEFT JOIN faces f ON f.person_id = persons.id AND f.ignored = 0 AND f.active = 1
-            LEFT JOIN photos p ON p.id = f.photo_id AND p.available = 1 AND p.is_duplicate = 0 AND p.modified = f.modified AND p.bytes = f.bytes
+            LEFT JOIN photos p ON p.id = f.photo_id AND p.available = 1 AND p.duplicate_checked = 1 AND p.is_duplicate = 0 AND p.modified = f.modified AND p.bytes = f.bytes
             GROUP BY persons.id ORDER BY total DESC, unicode_lower(persons.name), persons.id'
             )
             ->fetchAll();
@@ -152,7 +152,7 @@ final class FaceStore
             (' .
                 self::CURRENT_FACE .
                 ') AS current FROM faces f JOIN photos p ON p.id = f.photo_id
-            WHERE f.person_id = ? AND p.is_duplicate = 0 ORDER BY current DESC, f.id'
+            WHERE f.person_id = ? AND p.duplicate_checked = 1 AND p.is_duplicate = 0 ORDER BY current DESC, f.id'
         );
         $query->execute([$id]);
         return $query->fetchAll();
@@ -164,7 +164,7 @@ final class FaceStore
     public function crop(int $id): ?array
     {
         $query = $this->database->prepare('SELECT f.crop, f.photo_id FROM faces f JOIN photos p ON p.id = f.photo_id
-            WHERE f.id = ? AND p.available = 1 AND p.is_duplicate = 0');
+            WHERE f.id = ? AND p.available = 1 AND p.duplicate_checked = 1 AND p.is_duplicate = 0');
         $query->execute([$id]);
         return $query->fetch() ?: null;
     }
@@ -210,6 +210,8 @@ final class FaceStore
             if (
                 !$current ||
                 !$current['available'] ||
+                !$current['duplicate_checked'] ||
+                $current['is_duplicate'] ||
                 $current['modified'] !== $photo['modified'] ||
                 $current['bytes'] !== $photo['bytes'] ||
                 $current['face_status'] === 'excluded' ||

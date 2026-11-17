@@ -119,12 +119,15 @@ final class OneDriveTest extends TestCase
             '@odata.deltaLink' => OneDriveClient::GRAPH . '/delta'
         ];
         $this->library->index();
-        $this->assertSame(1, $this->library->photoCount());
+        $this->assertSame(0, $this->library->photoCount());
+        $this->assertSame(1, $this->library->importProgress()['completed']);
         $this->assertSame(1, $this->library->importProgress()['estimated']);
         $this->library->index();
+        $this->assertSame([], $this->client->downloads);
+        $this->library->oneDrive->previews([1, 2]);
         $this->assertSame(2, $this->library->photoCount());
         $this->assertSame(['FOTOS', 'Other'], array_column($this->library->photos(sort: 'oldest'), 'album'));
-        $this->assertSame([], $this->client->downloads);
+        $this->assertSame(['a', 'b'], $this->client->downloads);
         $this->assertSame(0, $this->library->importProgress()['estimated']);
     }
 
@@ -231,9 +234,9 @@ final class OneDriveTest extends TestCase
         } catch (RuntimeException $exception) {
             $this->assertSame(410, $exception->getCode());
         }
-        $this->assertSame(1, $this->library->photoCount());
+        $this->assertSame(1, $this->library->importProgress()['completed']);
         $this->index([$this->item('a')]);
-        $this->assertSame(1, $this->library->photoCount());
+        $this->assertSame(1, $this->library->importProgress()['completed']);
         $this->assertSame([], $this->client->downloads);
     }
 
@@ -310,6 +313,9 @@ final class OneDriveTest extends TestCase
 
     public function testThumbnailsAreDownloadedForEveryFormatWithoutOriginalsOrRendering(): void
     {
+        ob_start();
+        imagejpeg(imagecreatetruecolor(32, 24));
+        $this->client->jpeg = ob_get_clean();
         $items = [];
         foreach (['jpg', 'png', 'gif', 'webp', 'mov', 'avi', '3gp'] as $number => $extension) {
             $item = $this->item('item-' . $number, 'photo.' . $extension);
@@ -499,6 +505,15 @@ final class OneDriveTest extends TestCase
         $state = $this->library->jobs->start('previews');
         ob_start();
         try {
+            while ($state['status'] === 'running') {
+                $state = $this->library->jobs->step('previews', $state['token'], previewLimit: PHP_INT_MAX);
+            }
+        } finally {
+            ob_end_clean();
+        }
+        $state = $this->library->jobs->start('previews');
+        ob_start();
+        try {
             $state = $this->library->jobs->step('previews', $state['token'], previewLimit: PHP_INT_MAX);
         } finally {
             ob_end_clean();
@@ -531,7 +546,9 @@ final class OneDriveTest extends TestCase
             $this->assertSame('running', $state['status']);
             $this->library->jobs->pause('previews', $state['token']);
             $state = $this->library->jobs->start('previews');
-            $state = $this->library->jobs->step('previews', $state['token'], previewLimit: PHP_INT_MAX);
+            while ($state['status'] === 'running') {
+                $state = $this->library->jobs->step('previews', $state['token'], previewLimit: PHP_INT_MAX);
+            }
         } finally {
             ob_end_clean();
         }

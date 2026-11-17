@@ -154,7 +154,7 @@ final class JobRunner
                 "SELECT COUNT(*) AS total,
                 COALESCE(SUM($done), 0) AS completed, COALESCE(SUM($error), 0) AS errors,
                 COALESCE(SUM($due), 0) AS queued
-                FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1 AND p.is_duplicate = 0" .
+                FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1 AND p.duplicate_checked = 1 AND p.is_duplicate = 0" .
                     ($job === 'faces' ? ' AND p.priority <> -1' : " AND (p.priority = 0 OR p.status = 'done')")
             );
             $parameters = [':retry' => time() - 3600];
@@ -370,7 +370,7 @@ final class JobRunner
                     'thumbnail-0',
                     'thumbnail-1'
                 ],
-                'previews' => ['thumbnail-0', 'thumbnail-1'],
+                'previews' => ['thumbnail-0', 'thumbnail-1', 'duplicates'],
                 'tag' => ['tag', 'similar'],
                 'faces' => ['faces'],
                 'similar' => ['similar']
@@ -395,8 +395,8 @@ final class JobRunner
             }
             $database->exec('BEGIN IMMEDIATE');
             if ($job === 'scan') {
-                $database->exec('INSERT OR REPLACE INTO photo_metadata (id, path, modified, bytes, priority, is_duplicate)
-                    SELECT id, path, modified, bytes, priority, is_duplicate FROM photos;
+                $database->exec('INSERT OR REPLACE INTO photo_metadata (id, path, modified, bytes, priority, is_duplicate, duplicate_checked)
+                    SELECT id, path, modified, bytes, priority, is_duplicate, duplicate_checked FROM photos;
                     DELETE FROM photos; DELETE FROM scan_state;');
             }
             if ($job === 'previews') {
@@ -413,13 +413,11 @@ final class JobRunner
             }
             if ($job === 'tag') {
                 $database->exec(PhotoButler::RATING_RESET);
-                $database->exec('UPDATE photos SET is_duplicate = 0; UPDATE photo_metadata SET is_duplicate = 0');
                 $database->exec('DELETE FROM similar_state');
             }
             if ($job === 'similar') {
                 $database->exec("UPDATE photos SET priority = 1, ai_priority = 1 WHERE priority = -1 AND ai_priority = -1
                     AND id IN (SELECT photo_id FROM similar_state WHERE status = 'hidden');
-                    UPDATE photos SET is_duplicate = 0; UPDATE photo_metadata SET is_duplicate = 0;
                     DELETE FROM similar_state;");
             }
             if ($job === 'faces') {
@@ -497,6 +495,7 @@ final class JobRunner
             }
             if ($job === 'previews') {
                 $cachedCount = 0;
+                $duplicateIds = [];
                 $this->log($job, 'Prüfe vorhandene Thumbnails ab Foto ' . ($state['cursor'] + 1) . ' …');
                 $source = $this->library->oneDriveSource();
                 $sourceLock = fopen($this->dataPath . '/index.lock', 'c');
@@ -509,7 +508,10 @@ final class JobRunner
                 try {
                     $source->connection();
                     $statement = $database->prepare(
-                        'SELECT p.id, p.path, o.photo_id, f.photo_id AS preview_fallback FROM photos p LEFT JOIN onedrive_photos o ON o.photo_id = p.id
+                        'SELECT p.id, p.path, o.photo_id, f.photo_id AS preview_fallback, (' .
+                            DuplicatePhotos::DUE .
+                            ') AS duplicate_due FROM photos p LEFT JOIN onedrive_photos o ON o.photo_id = p.id
+                        LEFT JOIN duplicate_state d ON d.photo_id = p.id
                         LEFT JOIN onedrive_preview_fallbacks f ON f.photo_id=p.id AND f.version=o.version
                         WHERE p.available = 1 AND p.id > ? AND p.id <= ? ORDER BY p.id LIMIT ?'
                     );
@@ -529,6 +531,9 @@ final class JobRunner
                         if ($cached) {
                             $results[$row['id']] = true;
                             $cachedCount++;
+                            if ($row['duplicate_due']) {
+                                $duplicateIds[] = (int) $row['id'];
+                            }
                         }
                         if (!$cached) {
                             $ids[] = (int) $row['id'];
@@ -541,7 +546,7 @@ final class JobRunner
                                 phase: 'Bestandsprüfung: ' . $checked . ' geprüft, ' . $cachedCount . ' vorhanden'
                             );
                         }
-                        if (count($ids) === self::PREVIEW_BATCH_SIZE) {
+                        if (count($ids) + count($duplicateIds) === self::PREVIEW_BATCH_SIZE) {
                             break;
                         }
                     }
@@ -558,6 +563,7 @@ final class JobRunner
                     if ($ids !== []) {
                         $results += $source->previews($ids);
                     }
+                    $this->library->duplicates->check($duplicateIds);
                     ksort($results, SORT_NUMERIC);
                 } finally {
                     flock($sourceLock, LOCK_UN);

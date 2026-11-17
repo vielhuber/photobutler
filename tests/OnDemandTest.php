@@ -28,8 +28,8 @@ final class OnDemandTest extends TestCase
         $this->assertSame(0, $this->library->tagFaces(1));
         $this->assertSame([], glob($this->root . '/.data/thumbnails/*'));
         $this->assertSame([], $this->client->downloads);
-        $this->assertSame('error', $this->library->photo(1)->status);
-        $this->assertSame('error', $this->library->photo(1)->face_status);
+        $this->assertSame('pending', $this->library->photo(1)->status);
+        $this->assertSame('pending', $this->library->photo(1)->face_status);
     }
 
     public function testFaceProcessReceivesCachedThumbnailEvenWhenOriginalIsAbsent(): void
