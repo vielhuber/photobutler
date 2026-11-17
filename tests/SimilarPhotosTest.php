@@ -115,6 +115,18 @@ final class SimilarPhotosTest extends TestCase
         }
         $this->assertSame(4, $this->library->photoCount());
         $this->assertSame(0, $this->library->photo(1)->priority);
+        copy($this->library->imagePath(1, cachedOnly: true), $this->library->imagePath(2, cachedOnly: true));
+        $distinct = imagecreatefromstring(file_get_contents($this->library->imagePath(2, cachedOnly: true)));
+        imagefilledrectangle($distinct, x1: 80, y1: 80, x2: 87, y2: 87, color: 0xff_ff_ff);
+        imagejpeg($distinct, $this->library->imagePath(2, cachedOnly: true));
+        $this->library->database->exec(
+            'UPDATE photos SET priority = 0, modified = modified + 1, duplicate_checked = 0 WHERE id = 2'
+        );
+        $this->library->duplicates->check([2]);
+        $this->assertSame(
+            0,
+            $this->library->database->query('SELECT is_duplicate FROM photos WHERE id = 2')->fetchColumn()
+        );
         $this->library->jobs->reset('similar');
         $this->library->jobs->reset('tag');
         $this->assertSame(

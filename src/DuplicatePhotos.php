@@ -10,6 +10,8 @@ final class DuplicatePhotos
     public const DUE = 'p.duplicate_checked = 0 OR d.photo_id IS NULL OR NOT (' . self::FRESH . ')';
     private const COPY_DISTANCE = 4;
     private const COLOR_DISTANCE = 3;
+    private const DETAIL_DISTANCE = 2;
+    private const DETAIL_MAX_DISTANCE = 20;
 
     /**
      * Keep copy decisions independent of AI ratings and index hash bands for bounded candidate lookups.
@@ -122,26 +124,7 @@ final class DuplicatePhotos
                             $previous = $luminance;
                         }
                     }
-                    $small = imagecreatetruecolor(width: 16, height: 16);
-                    imagecopyresampled(
-                        $small,
-                        $image,
-                        dst_x: 0,
-                        dst_y: 0,
-                        src_x: 0,
-                        src_y: 0,
-                        dst_width: 16,
-                        dst_height: 16,
-                        src_width: imagesx($image),
-                        src_height: imagesy($image)
-                    );
-                    $signature = '';
-                    for ($y = 0; $y < 16; $y++) {
-                        for ($x = 0; $x < 16; $x++) {
-                            $color = imagecolorat($small, $x, $y);
-                            $signature .= chr(($color >> 16) & 255) . chr(($color >> 8) & 255) . chr($color & 255);
-                        }
-                    }
+                    $signature = $this->colorSignature($image, size: 16);
                 }
                 $database->exec('BEGIN IMMEDIATE');
                 try {
@@ -175,6 +158,7 @@ final class DuplicatePhotos
                         $candidates->execute();
                         $matches = $candidates->fetchAll();
                         $candidates->closeCursor();
+                        $detailSignature = null;
                         foreach ($matches as $other) {
                             if (
                                 substr_count(decbin($fingerprint ^ (int) $other['fingerprint']), needle: '1') >
@@ -188,6 +172,27 @@ final class DuplicatePhotos
                                 $difference += abs(ord($signature[$index]) - ord($other['signature'][$index]));
                             }
                             if ($difference > strlen($signature) * self::COLOR_DISTANCE) {
+                                continue;
+                            }
+                            $otherPath = $this->library->imagePath((int) $other['id'], cachedOnly: true);
+                            $otherImage =
+                                $otherPath === null ? false : imagecreatefromstring(file_get_contents($otherPath));
+                            if ($otherImage === false) {
+                                continue;
+                            }
+                            $detailSignature ??= $this->colorSignature($image, size: 64);
+                            $otherSignature = $this->colorSignature($otherImage, size: 64);
+                            $difference = 0;
+                            $maximum = 0;
+                            for ($index = 0; $index < strlen($detailSignature); $index++) {
+                                $delta = abs(ord($detailSignature[$index]) - ord($otherSignature[$index]));
+                                $difference += $delta;
+                                $maximum = max($maximum, $delta);
+                            }
+                            if (
+                                $difference > 64 * 64 * 3 * self::DETAIL_DISTANCE ||
+                                $maximum > self::DETAIL_MAX_DISTANCE
+                            ) {
                                 continue;
                             }
                             $photoWins = [
@@ -229,5 +234,33 @@ final class DuplicatePhotos
             flock($lock, LOCK_UN);
             fclose($lock);
         }
+    }
+
+    /**
+     * Normalize preview colors without storing or changing source images.
+     */
+    private function colorSignature(\GdImage $image, int $size): string
+    {
+        $small = imagecreatetruecolor($size, $size);
+        imagecopyresampled(
+            $small,
+            $image,
+            dst_x: 0,
+            dst_y: 0,
+            src_x: 0,
+            src_y: 0,
+            dst_width: $size,
+            dst_height: $size,
+            src_width: imagesx($image),
+            src_height: imagesy($image)
+        );
+        $signature = '';
+        for ($y = 0; $y < $size; $y++) {
+            for ($x = 0; $x < $size; $x++) {
+                $color = imagecolorat($small, $x, $y);
+                $signature .= chr(($color >> 16) & 255) . chr(($color >> 8) & 255) . chr($color & 255);
+            }
+        }
+        return $signature;
     }
 }
