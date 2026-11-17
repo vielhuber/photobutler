@@ -14,7 +14,7 @@ final class SimilarPhotos
     private const FINGERPRINT_BATCH = 200;
     private const COPY_REASON = 'Gleiches Foto in höherer Auflösung vorhanden';
     // only photos the ai has shown and nobody has rated by hand take part
-    public const CANDIDATE = 'p.available = 1 AND p.priority = 1 AND p.ai_priority = 1';
+    public const CANDIDATE = 'p.available = 1 AND p.is_duplicate = 0 AND p.priority = 1 AND p.ai_priority = 1';
     public const FRESH = 's.modified = p.modified AND s.bytes = p.bytes';
     public const DUE =
         's.photo_id IS NULL OR NOT (' .
@@ -41,6 +41,32 @@ Antworte ausschließlich mit JSON im Format {"series":[{"photos":[1,2],"keep":2,
         }
         if (!in_array('fingerprint', $columns, true)) {
             $library->database->exec('ALTER TABLE similar_state ADD COLUMN fingerprint INTEGER DEFAULT NULL');
+        }
+        $columns = array_column($library->database->query('PRAGMA table_info(photos)')->fetchAll(), 'name');
+        if (!in_array(needle: 'is_duplicate', haystack: $columns, strict: true)) {
+            $library->database->exec('BEGIN IMMEDIATE');
+            try {
+                foreach (['photos', 'photo_metadata'] as $table) {
+                    $library->database->exec(
+                        "ALTER TABLE {$table} ADD COLUMN is_duplicate INTEGER NOT NULL DEFAULT 0 CHECK (is_duplicate IN (0, 1))"
+                    );
+                }
+                $library->database
+                    ->prepare(
+                        "UPDATE photos SET is_duplicate = 1, priority = 1, ai_priority = 1
+                        WHERE priority = -1 AND ai_priority = -1 AND id IN (
+                            SELECT s.photo_id FROM similar_state s JOIN photos p ON p.id = s.photo_id
+                            WHERE s.status = 'hidden' AND s.reason = ? AND " .
+                            self::FRESH .
+                            ')'
+                    )
+                    ->execute([self::COPY_REASON]);
+                $library->database->commit();
+            } finally {
+                if ($library->database->inTransaction()) {
+                    $library->database->rollBack();
+                }
+            }
         }
     }
 
@@ -161,8 +187,8 @@ Antworte ausschließlich mit JSON im Format {"series":[{"photos":[1,2],"keep":2,
                     $hidden[(int) $copy['id']] = true;
                     $database
                         ->prepare(
-                            'UPDATE photos SET priority = -1, ai_priority = -1
-                            WHERE id = ? AND modified = ? AND bytes = ? AND priority = 1 AND ai_priority = 1'
+                            'UPDATE photos SET is_duplicate = 1
+                            WHERE id = ? AND modified = ? AND bytes = ? AND is_duplicate = 0 AND priority = 1 AND ai_priority = 1'
                         )
                         ->execute([$copy['id'], $copy['modified'], $copy['bytes']]);
                     $database
@@ -181,7 +207,7 @@ Antworte ausschließlich mit JSON im Format {"series":[{"photos":[1,2],"keep":2,
         }
         $this->library->jobs->log(
             'similar',
-            count($photos) . ' Fotos auf Kopien geprüft, ' . count($hidden) . ' Kopien ausgeblendet.'
+            count($photos) . ' Fotos auf Kopien geprüft, ' . count($hidden) . ' Duplikate markiert.'
         );
         return count($photos);
     }

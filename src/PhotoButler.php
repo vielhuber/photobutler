@@ -284,7 +284,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             default => '0'
         };
         $query = '%' . strtr(mb_strtolower($query), ['\\' => '\\\\', '%' => '\\%', '_' => '\\_']) . '%';
-        $statement = $this->database->prepare("SELECT $columns FROM photos WHERE available = 1
+        $statement = $this->database->prepare("SELECT $columns FROM photos WHERE available = 1 AND is_duplicate = 0
             AND (? = '0' OR id = ?)
             AND (? = 'all' OR priority = CAST(? AS INTEGER))
             AND (? = '0' OR id IN (SELECT f.photo_id FROM faces f JOIN photos p ON p.id = f.photo_id AND p.modified = f.modified AND p.bytes = f.bytes
@@ -380,7 +380,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
         try {
             $tagDue = "(p.status = 'pending' OR (p.status = 'error' AND p.attempted < :retry))";
             $statement = $this->database->prepare("SELECT p.*, $tagDue AS tag_due
-                FROM photos p WHERE p.available = 1 AND p.priority = 0 AND $tagDue ORDER BY p.id LIMIT :limit");
+                FROM photos p WHERE p.available = 1 AND p.is_duplicate = 0 AND p.priority = 0 AND $tagDue ORDER BY p.id LIMIT :limit");
             $statement->bindValue(':retry', time() - 3600, \PDO::PARAM_INT);
             $statement->bindValue(':limit', max(1, $limit), \PDO::PARAM_INT);
             $statement->execute();
@@ -974,7 +974,8 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             return;
         }
         if (isset($_GET['detail'])) {
-            $photo = $this->photo((int) $_GET['detail']);
+            $id = (int) $_GET['detail'];
+            $photo = $id > 0 ? $this->photos(relevance: 'all', id: $id)[0] ?? null : null;
             if ($photo !== null) {
                 $photo->faces = $this->faces->photoFaces($photo->id);
             }
@@ -984,6 +985,12 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
             return;
         }
         if (isset($_GET['photo'])) {
+            $statement = $this->database->prepare('SELECT is_duplicate FROM photos WHERE id = ? AND available = 1');
+            $statement->execute([(int) $_GET['photo']]);
+            if ($statement->fetchColumn() !== 0) {
+                http_response_code(404);
+                return;
+            }
             $original = in_array($_GET['size'] ?? '', ['original', 'detail'], true);
             if ($original && $this->oneDrive !== null) {
                 $photo = $this->oneDrive->photo((int) $_GET['photo']);
@@ -1152,7 +1159,7 @@ Antworte ausschließlich mit JSON im Format {"decision":"einblenden","reason":".
                 FaceStore::DETECTION .
                 ")), 0) AS face_done,
             COALESCE(SUM((p.priority = 0 AND (p.status = 'pending' OR (p.status = 'error' AND p.attempted < :retry))) OR $faceDue), 0) AS queued
-            FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1"
+            FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1 AND p.is_duplicate = 0"
         );
         $statement->execute([':retry' => time() - 3600, ':model' => FaceStore::MODEL]);
         return $statement->fetch();

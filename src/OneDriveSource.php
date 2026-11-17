@@ -275,7 +275,7 @@ final class OneDriveSource
                         $path = $legacyRoot . '/' . $relative;
                     }
                     $find = $database->prepare(
-                        'SELECT id,path,modified,bytes,priority FROM photos WHERE path=? UNION ALL SELECT id,path,modified,bytes,priority FROM photo_metadata WHERE path=? LIMIT 1'
+                        'SELECT id,path,modified,bytes,priority,is_duplicate FROM photos WHERE path=? UNION ALL SELECT id,path,modified,bytes,priority,is_duplicate FROM photo_metadata WHERE path=? LIMIT 1'
                     );
                     $find->execute([$path, $path]);
                     $saved = $find->fetch();
@@ -328,8 +328,9 @@ final class OneDriveSource
                     }
                     $database
                         ->prepare(
-                            "INSERT INTO photos(id,root,path,album,name,modified,bytes,width,height,taken,seen,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                            "INSERT INTO photos(id,root,path,album,name,modified,bytes,width,height,taken,seen,priority,is_duplicate) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(id) DO UPDATE SET root=excluded.root,name=excluded.name,album=excluded.album,seen=excluded.seen,available=1,priority=excluded.priority,
+                        is_duplicate=excluded.is_duplicate,
                         modified=excluded.modified,bytes=excluded.bytes,taken=excluded.taken,width=excluded.width,height=excluded.height"
                         )
                         ->execute([
@@ -344,7 +345,8 @@ final class OneDriveSource
                             (int) ($dimensions['height'] ?? 0),
                             $taken,
                             $seen,
-                            $priority
+                            $priority,
+                            $changed ? 0 : $saved['is_duplicate'] ?? 0
                         ]);
                     if ($changed) {
                         $database->prepare('DELETE FROM onedrive_preview_fallbacks WHERE photo_id=?')->execute([$id]);
@@ -378,6 +380,7 @@ final class OneDriveSource
                         // photos hidden in favor of a removed one become visible again and are compared anew
                         "UPDATE photos SET priority = 1, ai_priority = 1 WHERE priority = -1 AND ai_priority = -1
                             AND id IN (SELECT photo_id FROM similar_state WHERE status = 'hidden' AND kept IN (SELECT id FROM photos WHERE seen<>?))",
+                        "UPDATE photos SET is_duplicate = 0 WHERE id IN (SELECT photo_id FROM similar_state WHERE status = 'hidden' AND kept IN (SELECT id FROM photos WHERE seen<>?))",
                         'DELETE FROM similar_state WHERE EXISTS (SELECT 1 FROM photos WHERE seen<>? AND id IN (similar_state.photo_id, similar_state.kept))',
                         'DELETE FROM onedrive_photos WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',
                         'DELETE FROM onedrive_preview_fallbacks WHERE photo_id IN (SELECT id FROM photos WHERE seen<>?)',

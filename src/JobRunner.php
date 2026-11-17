@@ -154,7 +154,7 @@ final class JobRunner
                 "SELECT COUNT(*) AS total,
                 COALESCE(SUM($done), 0) AS completed, COALESCE(SUM($error), 0) AS errors,
                 COALESCE(SUM($due), 0) AS queued
-                FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1" .
+                FROM photos p LEFT JOIN face_state s ON s.photo_id = p.id WHERE p.available = 1 AND p.is_duplicate = 0" .
                     ($job === 'faces' ? ' AND p.priority <> -1' : " AND (p.priority = 0 OR p.status = 'done')")
             );
             $parameters = [':retry' => time() - 3600];
@@ -173,7 +173,7 @@ final class JobRunner
                 COALESCE(SUM(s.status IN ('done', 'unsupported', 'hidden') AND NOT ($due)), 0) AS completed,
                 COALESCE(SUM($fresh AND s.status = 'error'), 0) AS errors, COALESCE(SUM($due), 0) AS queued
                 FROM photos p LEFT JOIN similar_state s ON s.photo_id = p.id
-                WHERE ($candidate) OR (p.available = 1 AND p.priority = -1 AND p.ai_priority = -1 AND s.status = 'hidden')"
+                WHERE ($candidate) OR (p.available = 1 AND (p.is_duplicate = 1 OR (p.priority = -1 AND p.ai_priority = -1)) AND s.status = 'hidden')"
             );
             $statement->execute([':retry' => time() - 3600]);
             $state = array_replace($state, $statement->fetch());
@@ -395,8 +395,8 @@ final class JobRunner
             }
             $database->exec('BEGIN IMMEDIATE');
             if ($job === 'scan') {
-                $database->exec('INSERT OR REPLACE INTO photo_metadata (id, path, modified, bytes, priority)
-                    SELECT id, path, modified, bytes, priority FROM photos;
+                $database->exec('INSERT OR REPLACE INTO photo_metadata (id, path, modified, bytes, priority, is_duplicate)
+                    SELECT id, path, modified, bytes, priority, is_duplicate FROM photos;
                     DELETE FROM photos; DELETE FROM scan_state;');
             }
             if ($job === 'previews') {
@@ -413,11 +413,13 @@ final class JobRunner
             }
             if ($job === 'tag') {
                 $database->exec(PhotoButler::RATING_RESET);
+                $database->exec('UPDATE photos SET is_duplicate = 0; UPDATE photo_metadata SET is_duplicate = 0');
                 $database->exec('DELETE FROM similar_state');
             }
             if ($job === 'similar') {
                 $database->exec("UPDATE photos SET priority = 1, ai_priority = 1 WHERE priority = -1 AND ai_priority = -1
                     AND id IN (SELECT photo_id FROM similar_state WHERE status = 'hidden');
+                    UPDATE photos SET is_duplicate = 0; UPDATE photo_metadata SET is_duplicate = 0;
                     DELETE FROM similar_state;");
             }
             if ($job === 'faces') {
